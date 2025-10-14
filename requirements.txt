@@ -1,6 +1,6 @@
 # Database connectors
 mysql-connector-python==8.0.33
-snowflake-connector-python==3.0.4
+snowflake-connector-python==4.0.0
 psycopg2-binary==2.9.7
 
 # Environment and configuration

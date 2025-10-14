@@ -65,6 +65,8 @@ class Settings:
     ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING', 'true').lower() == 'true'
     
     # Snowflake Optimization Configuration
+    # Use COPY command for batches >= 500 rows for better performance
+    # Falls back to INSERT if SSL certificate issues occur
     SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '500'))
     
     # Loading Strategy Configuration

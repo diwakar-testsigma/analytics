@@ -152,20 +152,30 @@ CREATE TABLE IF NOT EXISTS dim_nlp_templates (
 
 CREATE TABLE IF NOT EXISTS dim_object_types (
     object_type_id INTEGER PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    category VARCHAR(100),
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
+    name VARCHAR(255),
     display_name VARCHAR(255) NOT NULL,
     class_name VARCHAR(255),
     technology VARCHAR(100),
     package_name VARCHAR(500),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
--- ===== TENANT SCHEMA (15 tables) =====
+-- ===== TENANT SCHEMA (17 tables) =====
+
+CREATE TABLE IF NOT EXISTS dim_projects (
+    project_id INTEGER PRIMARY KEY,
+    project_uuid BIGINT,
+    name VARCHAR(255),
+    description TEXT,
+    tenant_id BIGINT NOT NULL,
+    created_by_id INTEGER,
+    updated_by_id INTEGER,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+);
 
 CREATE TABLE IF NOT EXISTS dim_applications (
     app_id INTEGER PRIMARY KEY,
@@ -194,6 +204,11 @@ CREATE TABLE IF NOT EXISTS dim_test_cases (
     updated_by_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
+    creation_type VARCHAR(50),
+    is_manual BOOLEAN,
+    is_ai_generated BOOLEAN,
+    is_data_driven BOOLEAN,
+    is_step_group BOOLEAN,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -224,6 +239,7 @@ CREATE TABLE IF NOT EXISTS fct_executions (
     end_time TIMESTAMP,
     duration_seconds INTEGER,
     triggered_by VARCHAR(100),
+    trigger_type VARCHAR(100),
     environment_type VARCHAR(50),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
@@ -283,7 +299,7 @@ CREATE TABLE IF NOT EXISTS dim_test_data (
 CREATE TABLE IF NOT EXISTS dim_agents (
     agent_id INTEGER PRIMARY KEY,
     agent_uuid VARCHAR(255),
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     type VARCHAR(100),
     config_json TEXT,
     status VARCHAR(50),
@@ -372,6 +388,25 @@ CREATE TABLE IF NOT EXISTS dim_test_suites (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     suite_id INTEGER,
+    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS fct_test_plan_results (
+    test_plan_result_id INTEGER,
+    test_plan_id INTEGER NOT NULL,
+    tenant_id BIGINT NOT NULL,
+    user_id INTEGER,
+    status VARCHAR(50),
+    latest_status VARCHAR(50),
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
+    duration_seconds INTEGER,
+    total_count INTEGER,
+    passed_count INTEGER,
+    failed_count INTEGER,
+    trigger_type VARCHAR(100),
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
