@@ -1,0 +1,28 @@
+# Database connectors
+mysql-connector-python==8.0.33
+snowflake-connector-python==3.0.4
+psycopg2-binary==2.9.7
+
+# Environment and configuration
+python-dotenv==1.0.0
+
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+
+# Scheduling
+APScheduler==3.10.4
+
+# Logging and utilities
+colorlog==6.7.0
+
+# Monitoring
+prometheus-client==0.19.0
+
+# HTTP client for notifications
+requests==2.31.0
+
+# Testing (optional)
+pytest==7.4.0
+pytest-cov==4.1.0

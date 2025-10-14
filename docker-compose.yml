@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  etl-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: analytics-etl-service
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      # Override for Docker - use host.docker.internal to connect to host MySQL
+      - MYSQL_CONNECTION_URL=mysql://root:root@host.docker.internal:3306
+    volumes:
+      - ./logs:/app/logs
+      - ./output:/app/output
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - etl_network
+
+networks:
+  etl_network:
+    driver: bridge

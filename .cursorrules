@@ -1,0 +1,50 @@
+# ETL Pipeline Project Rules
+
+## Code Structure Rules
+1. **NO NEW FILES** - Fix existing files instead of creating new ones
+2. **NO __init__.py files** - Keep directories clean without init files
+3. **NO README.md files** - Only create documentation when explicitly requested
+4. **SINGLE RESPONSIBILITY** - Each file should have one clear purpose
+5. **CLEAN CODE** - No unnecessary comments, keep logic simple and readable
+
+## Configuration Rules
+1. **ALL CONFIG FROM .env** - No hardcoded values, everything must come from environment variables
+2. **NO DEFAULT VALUES** - Remove all default values from os.getenv() calls
+3. **CONFIG TEMPLATE** - Use config/env_template.txt for all environment variables
+
+## Extraction Rules
+1. **MULTI-DATABASE** - Extract from all databases, not just one
+2. **SINGLE JSON OUTPUT** - Always create one consolidated JSON file in demons format
+3. **CONSOLIDATED STRUCTURE** - Structure: {database: {table: {records: count, sample: data}}}
+4. **DATABASE FILTERING** - Ignore databases with keywords in EXTRACT_IGNORE_DB_KEYWORDS config
+
+## Transformation Rules
+1. **SCHEMA-DRIVEN** - Only transform tables defined in Snowflake schema (02_schema_design.md)
+2. **SINGLE JSON OUTPUT** - Always create one consolidated JSON file, not multiple files
+3. **TRANSFORMATION MAPPING** - Use config/transformation_mapping.py to define which source tables map to which Snowflake tables
+4. **SKIP IRRELEVANT** - Skip tables not relevant to Snowflake schema, don't process everything
+
+## File Organization Rules
+1. **extractors/** - MySQL extraction logic only
+2. **transformers/** - Data transformation logic only  
+3. **loaders/** - Snowflake loading logic only
+4. **tests/** - Test files only
+5. **output/** - Generated files only
+
+## User Preferences
+1. **KEEP IT SIMPLE** - Don't overcomplicate, user wants clean and neat code
+2. **FIX EXISTING** - Always fix current files instead of creating new ones
+3. **FOLLOW SCHEMA** - Use 02_schema_design.md as the source of truth for transformations
+4. **SINGLE OUTPUT** - Always generate one consolidated JSON file for Snowflake consumption
+5. **NO SHIT CODE** - Write clean, understandable code without unnecessary complexity
+
+## Testing Rules
+1. **test_transformation.py** - Only test file needed, takes filename as argument
+2. **USE EXAMPLE FILE** - Always test with demons_extracted_data_20250918_142750.json
+3. **VERIFY OUTPUT** - Check that output matches Snowflake schema requirements
+
+## Remember
+- User gets frustrated with too many files and complex code
+- Always ask "is this really needed?" before creating anything new
+- Focus on the core ETL pipeline: Extract -> Transform -> Load
+- Keep transformation logic based on the schema design document

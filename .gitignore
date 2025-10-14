@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+*.egg-info/
+dist/
+build/
+
+# Logs
+logs/*.log
+*.log
+
+# Output files
+output/extracted/*
+output/transformations/*
+!output/extracted/.gitkeep
+!output/transformations/.gitkeep
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test artifacts
+tests/data/*.db
+tests/*.db
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Docker
+tests/grafana/data/
+tests/data/analytics.db
