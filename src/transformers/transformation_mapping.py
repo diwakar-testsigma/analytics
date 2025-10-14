@@ -25,6 +25,7 @@ IDENTITY_MAPPINGS = {
         "primary_key": "user_id",
         "column_mappings": {
             "user_id": "users.id",
+            "organization_id": "users.organization_tsid",
             "first_name": "users.first_name",
             "last_name": "users.last_name",
             "email": "users.email",

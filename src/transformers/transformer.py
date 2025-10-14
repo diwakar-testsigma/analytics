@@ -8,6 +8,7 @@ transformation mappings.
 
 import json
 import os
+import math
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -41,6 +42,43 @@ class DataTransformer:
         
         # Ensure output directory exists
         os.makedirs(self.config['output_dir'], exist_ok=True)
+    
+    def sanitize_value(self, value: Any) -> Any:
+        """
+        Sanitize values to be JSON serializable
+        Handles NaN, Infinity, and other problematic values
+        
+        Args:
+            value: Value to sanitize
+            
+        Returns:
+            Sanitized value safe for JSON serialization
+        """
+        if value is None:
+            return None
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+        if isinstance(value, (list, tuple)):
+            return [self.sanitize_value(v) for v in value]
+        if isinstance(value, dict):
+            return {k: self.sanitize_value(v) for k, v in value.items()}
+        return value
+    
+    def sanitize_records(self, records: List[Dict]) -> List[Dict]:
+        """
+        Sanitize all records in a list
+        
+        Args:
+            records: List of records to sanitize
+            
+        Returns:
+            List of sanitized records
+        """
+        return [
+            {k: self.sanitize_value(v) for k, v in record.items()}
+            for record in records
+        ]
     
     def transform_table_data(self, source_table: str, source_data: List[Dict]) -> Dict[str, List[Dict]]:
         """
@@ -326,10 +364,18 @@ class DataTransformer:
                     for table, records in transformed_data.items():
                         all_transformed_data[table].extend(records)
         
+        # Sanitize all transformed data to ensure JSON compatibility
+        sanitized_tables = {}
+        for table_name, records in all_transformed_data.items():
+            if records:
+                sanitized_tables[table_name] = self.sanitize_records(records)
+            else:
+                sanitized_tables[table_name] = records
+        
         # Create output data structure
         output_data = {
             'etl_timestamp': datetime.now().isoformat(),
-            'tables': all_transformed_data
+            'tables': sanitized_tables
         }
         
         # Save transformed data
@@ -338,13 +384,13 @@ class DataTransformer:
         output_path = os.path.join(self.config['output_dir'], output_filename)
         
         with open(output_path, 'w') as f:
-            json.dump(output_data, f, indent=2, default=str)
+            json.dump(output_data, f, indent=2, default=str, ensure_ascii=False)
         
         # Log summary
-        total_records = sum(len(records) for records in all_transformed_data.values())
+        total_records = sum(len(records) for records in sanitized_tables.values())
         self.logger.info(
             f"Transformation complete: {total_records} total records across "
-            f"{len([t for t, r in all_transformed_data.items() if r])} tables"
+            f"{len([t for t, r in sanitized_tables.items() if r])} tables (data sanitized for JSON)"
         )
         
         return output_path
@@ -396,10 +442,18 @@ class DataTransformer:
                 except Exception as e:
                     self.logger.error(f"Failed to transform {filepath}: {e}")
         
+        # Sanitize all transformed data to ensure JSON compatibility
+        sanitized_tables = {}
+        for table_name, records in all_transformed_data.items():
+            if records:
+                sanitized_tables[table_name] = self.sanitize_records(records)
+            else:
+                sanitized_tables[table_name] = records
+        
         # Create output data structure
         output_data = {
             'etl_timestamp': datetime.now().isoformat(),
-            'tables': all_transformed_data
+            'tables': sanitized_tables
         }
         
         # Save consolidated transformed data
@@ -408,7 +462,7 @@ class DataTransformer:
         output_path = os.path.join(self.config['output_dir'], output_filename)
         
         with open(output_path, 'w') as f:
-            json.dump(output_data, f, indent=2, default=str)
+            json.dump(output_data, f, indent=2, default=str, ensure_ascii=False)
         
         return output_path
     
