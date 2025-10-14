@@ -620,6 +620,16 @@ class SnowflakeDataSource(DataSource):
                                     processed_row[col] = None
                             else:
                                 processed_row[col] = value
+                        elif ('is_' in col or col.endswith('_enabled') or col.endswith('_active') or 
+                              col.endswith('_supported') or col.endswith('_flaky') or
+                              col in ('success', 'deprecated', 'auth_enabled', 'api_supported')):
+                            # Convert 0/1 to boolean for common boolean column patterns
+                            if value in (0, 1, '0', '1'):
+                                processed_row[col] = bool(int(value))
+                            elif value in (True, False, 'true', 'false', 'True', 'False'):
+                                processed_row[col] = value if isinstance(value, bool) else (value.lower() == 'true')
+                            else:
+                                processed_row[col] = value
                         else:
                             processed_row[col] = value
                     

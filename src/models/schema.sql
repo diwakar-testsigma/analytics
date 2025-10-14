@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS dim_organizations (
     organization_id INTEGER PRIMARY KEY,
     organization_uuid VARCHAR(255),
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(100),
-    policy_json TEXT,
     created_by_id INTEGER,
     updated_by_id INTEGER,
     created_at TIMESTAMP,
@@ -54,13 +52,10 @@ CREATE TABLE IF NOT EXISTS dim_accounts (
 CREATE TABLE IF NOT EXISTS fct_user_sessions (
     session_id VARCHAR(255) PRIMARY KEY,
     user_id VARCHAR(255),
-    organization_id INTEGER,
     login_time TIMESTAMP NOT NULL,
     logout_time TIMESTAMP,
-    duration_minutes INTEGER,
-    ip_address VARCHAR(100),
-    user_agent TEXT,
     last_access_time TIMESTAMP,
+    max_inactive_interval INTEGER,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -94,35 +89,28 @@ CREATE TABLE IF NOT EXISTS brg_tenant_features (
     tenant_feature_id INTEGER PRIMARY KEY,
     tenant_id INTEGER NOT NULL,
     feature_id INTEGER,
-    is_enabled BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     feature_name VARCHAR(255) NOT NULL,
     is_add_on BOOLEAN DEFAULT FALSE,
-    enabled_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
 CREATE TABLE IF NOT EXISTS dim_features (
     feature_id INTEGER PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
-    description TEXT,
-    category VARCHAR(100),
-    is_active BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
+    name VARCHAR(255),
     is_premium BOOLEAN DEFAULT FALSE,
     tenant_id INTEGER,
-    enabled_at TIMESTAMP,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
 CREATE TABLE IF NOT EXISTS dim_data_generators (
     generator_id INTEGER PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
-    type VARCHAR(100),
-    config_json TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
+    display_name VARCHAR(255),
+    description TEXT,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     class_package VARCHAR(500),
@@ -267,9 +255,7 @@ CREATE TABLE IF NOT EXISTS fct_test_results (
 CREATE TABLE IF NOT EXISTS dim_elements (
     element_id INTEGER PRIMARY KEY,
     element_uuid VARCHAR(255),
-    name VARCHAR(255) NOT NULL,
-    type VARCHAR(100),
-    locator_value TEXT,
+    locator TEXT,
     app_id INTEGER NOT NULL,
     tenant_id INTEGER,
     created_by_id INTEGER,
@@ -283,11 +269,10 @@ CREATE TABLE IF NOT EXISTS dim_elements (
 CREATE TABLE IF NOT EXISTS dim_test_data (
     test_data_id INTEGER PRIMARY KEY,
     test_data_uuid VARCHAR(255),
-    name VARCHAR(255) NOT NULL,
-    type VARCHAR(100),
+    name VARCHAR(255),
     data_json TEXT,
     app_id INTEGER,
-    tenant_id INTEGER NOT NULL,
+    tenant_id INTEGER,
     created_by_id INTEGER,
     updated_by_id INTEGER,
     created_at TIMESTAMP,
@@ -300,7 +285,6 @@ CREATE TABLE IF NOT EXISTS dim_agents (
     agent_id INTEGER PRIMARY KEY,
     agent_uuid VARCHAR(255),
     name VARCHAR(255),
-    type VARCHAR(100),
     config_json TEXT,
     status VARCHAR(50),
     tenant_id INTEGER NOT NULL,
@@ -316,15 +300,14 @@ CREATE TABLE IF NOT EXISTS dim_agents (
 
 CREATE TABLE IF NOT EXISTS fct_api_steps (
     api_step_id INTEGER PRIMARY KEY,
-    test_case_id INTEGER NOT NULL,
+    test_step_id INTEGER NOT NULL,
     tenant_id BIGINT,
     user_id INTEGER,
-    step_order INTEGER,
     method VARCHAR(20),
     url TEXT,
-    headers_json TEXT,
-    body TEXT,
-    expected_status INTEGER,
+    api_type VARCHAR(50),
+    authentication_type VARCHAR(50),
+    body_type VARCHAR(50),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
@@ -350,31 +333,6 @@ CREATE TABLE IF NOT EXISTS fct_accessibility_results (
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
-CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
-    metric_id INTEGER PRIMARY KEY,
-    tenant_id INTEGER NOT NULL,
-    metric_name VARCHAR(255) NOT NULL,
-    metric_value DECIMAL(20,4),
-    metric_unit VARCHAR(50),
-    timestamp TIMESTAMP NOT NULL,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
-
-CREATE TABLE IF NOT EXISTS fct_infrastructure (
-    infrastructure_id INTEGER PRIMARY KEY,
-    tenant_id INTEGER NOT NULL,
-    resource_type VARCHAR(100),
-    resource_name VARCHAR(255),
-    status VARCHAR(50),
-    metrics_json TEXT,
-    timestamp TIMESTAMP,
-    created_at TIMESTAMP,
-    updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
-
 CREATE TABLE IF NOT EXISTS dim_test_suites (
     test_suite_id INTEGER PRIMARY KEY,
     test_suite_uuid BIGINT,
@@ -388,6 +346,26 @@ CREATE TABLE IF NOT EXISTS dim_test_suites (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     suite_id INTEGER,
+    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+);
+
+CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
+    metric_id INTEGER PRIMARY KEY,
+    tenant_id BIGINT NOT NULL,
+    test_plan_result_id INTEGER,
+    result VARCHAR(100),
+    latest_result VARCHAR(100),
+    total_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    passed_count INTEGER DEFAULT 0,
+    stopped_count INTEGER DEFAULT 0,
+    not_executed_count INTEGER DEFAULT 0,
+    running_count INTEGER DEFAULT 0,
+    queued_count INTEGER DEFAULT 0,
+    duration INTEGER,
+    consolidated_duration INTEGER,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -417,8 +395,9 @@ CREATE TABLE IF NOT EXISTS fct_agent_activity (
     user_id INTEGER,
     activity_type VARCHAR(100),
     description TEXT,
-    metadata_json TEXT,
-    timestamp TIMESTAMP,
+    status VARCHAR(50),
+    start_time TIMESTAMP,
+    end_time TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
@@ -434,7 +413,6 @@ CREATE TABLE IF NOT EXISTS fct_audit_events (
     tenant_id BIGINT NOT NULL,
     changes_json TEXT,
     ip_address VARCHAR(100),
-    user_agent TEXT,
     timestamp TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,

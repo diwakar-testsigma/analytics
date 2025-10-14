@@ -32,8 +32,8 @@ IDENTITY_MAPPINGS = {
             "authenticity_token": "users.authenticity_token",
             "password_hash": "users.password",
             "last_logged_in_at": "users.last_logged_in_at",
-            "created_at": "users.created_at",
-            "updated_at": "users.updated_at",
+            "created_at": "users.created_date",
+            "updated_at": "users.updated_date",
             "is_2fa_enabled": "user_preferences.is_2fa_enabled",
             "user_account_id": "user_accounts.id",
             "account_id": "user_accounts.account_id",
@@ -49,10 +49,8 @@ IDENTITY_MAPPINGS = {
             "organization_id": "organizations.tsid",
             "organization_uuid": "organizations.uuid",
             "name": "organizations.name",
-            "type": "organizations.type",
-            "policy_json": "organizations.policy_json",
-            "created_by_id": "organizations.created_by",
-            "updated_by_id": "organizations.updated_by",
+            "created_by_id": "organizations.created_by_id",
+            "updated_by_id": "organizations.updated_by_id",
             "created_at": "organizations.created_date",
             "updated_at": "organizations.updated_date",
             "password_expiry_days": "organization_policy.password_expiry_days",
@@ -83,13 +81,10 @@ IDENTITY_MAPPINGS = {
         "column_mappings": {
             "session_id": "SPRING_SESSION.SESSION_ID",
             "user_id": "SPRING_SESSION.PRINCIPAL_NAME",
-            "organization_id": "SPRING_SESSION.ORGANIZATION_ID",
             "login_time": "SPRING_SESSION.CREATION_TIME",
             "logout_time": "SPRING_SESSION.EXPIRY_TIME",
-            "duration_minutes": "SPRING_SESSION.DURATION_MINUTES",
-            "ip_address": "SPRING_SESSION.IP_ADDRESS",
-            "user_agent": "SPRING_SESSION.USER_AGENT",
-            "last_access_time": "SPRING_SESSION.LAST_ACCESS_TIME"
+            "last_access_time": "SPRING_SESSION.LAST_ACCESS_TIME",
+            "max_inactive_interval": "SPRING_SESSION.MAX_INACTIVE_INTERVAL"
         }
     }
 }
@@ -114,13 +109,13 @@ MASTER_MAPPINGS = {
             "created_at": "tenants.created_date",
             "updated_at": "tenants.updated_date",
             "plan_type": "subscriptions.plan",
-            "subscription_status": "subscriptions.status",
+            "subscription_status": "subscriptions.status_enum",
             "allowed_users": "subscriptions.allowed_users",
             "max_projects": "subscriptions.no_of_projects",
             "cloud_automated_minutes_per_month": "subscriptions.cloud_automated_minutes_per_month",
             "local_automated_minutes_per_month": "subscriptions.local_automated_minutes_per_month",
-            "total_parallel_runs": "subscriptions.no_of_parallel_runs",
-            "next_renewal_at": "subscriptions.next_payment_date"
+            "total_parallel_runs": "subscriptions.total_parallel_runs",
+            "next_renewal_at": "subscriptions.next_renewal_at"
         }
     },
     
@@ -129,31 +124,25 @@ MASTER_MAPPINGS = {
         "primary_key": ["tenant_id", "feature_id"],
         "column_mappings": {
             "tenant_id": "tenant_features.tenant_id",
-            "feature_id": "tenant_features.feature_id",
-            "is_enabled": "tenant_features.is_enabled",
+            "feature_id": "tenant_features.id",
             "created_at": "tenant_features.created_date",
             "updated_at": "tenant_features.updated_date",
             "tenant_feature_id": "tenant_features.id",
             "feature_name": "tenant_features.name",
-            "is_add_on": "tenant_features.is_add_on",
-            "enabled_at": "tenant_features.enabled_at"
+            "is_add_on": "tenant_features.is_add_on"
         }
     },
     
     "dim_features": {
-        "source_tables": ["features", "tenant_features"],
+        "source_tables": ["tenant_features"],
         "primary_key": "feature_id",
         "column_mappings": {
-            "feature_id": "features.id",
-            "name": "features.name",
-            "description": "features.description",
-            "category": "features.category",
-            "is_active": "features.is_active",
-            "created_at": "features.created_date",
-            "updated_at": "features.updated_date",
+            "feature_id": "tenant_features.id",
+            "name": "tenant_features.name",
             "is_premium": "tenant_features.is_add_on",
             "tenant_id": "tenant_features.tenant_id",
-            "enabled_at": "tenant_features.enabled_at"
+            "created_at": "tenant_features.created_date",
+            "updated_at": "tenant_features.updated_date"
         }
     },
     
@@ -163,9 +152,8 @@ MASTER_MAPPINGS = {
         "column_mappings": {
             "generator_id": "data_generators.id",
             "name": "data_generators.name",
-            "type": "data_generators.type",
-            "config_json": "data_generators.config_json",
-            "is_active": "data_generators.is_active",
+            "display_name": "data_generators.display_name",
+            "description": "data_generators.description",
             "created_at": "data_generators.created_at_epoch",
             "updated_at": "data_generators.updated_at_epoch",
             "class_package": "data_generator_files.class_package",
@@ -236,13 +224,13 @@ TENANT_MAPPINGS = {
         "primary_key": "app_id",
         "column_mappings": {
             "app_id": "application.id",
-            "app_uuid": "application.uuid",
+            "app_uuid": "application.tsid",
             "name": "application.name",
             "description": "application.description",
-            "tenant_id": "application.tenant_id",
-            "status": "application.status",
-            "created_by_id": "application.created_by",
-            "updated_by_id": "application.updated_by",
+            "tenant_id": "application.tenant_tsid",
+            "status": "application.type_enum",
+            "created_by_id": "application.created_by_id",
+            "updated_by_id": "application.updated_by_id",
             "created_at": "application.created_date",
             "updated_at": "application.updated_date"
         }
@@ -321,7 +309,7 @@ TENANT_MAPPINGS = {
             "test_case_id": "test_case_result.test_case_id",
             "tenant_id": "test_case_result.tenant_tsid",
             "user_id": "test_case_result.created_by_id",
-            "status": "test_case_result.result",
+            "status": "test_case_result.result_enum",  # Changed from result to result_enum
             "start_time": "test_case_result.start_time",
             "end_time": "test_case_result.end_time",
             "duration_seconds": "test_case_result.duration",
@@ -338,14 +326,12 @@ TENANT_MAPPINGS = {
         "primary_key": "element_id",
         "column_mappings": {
             "element_id": "element_locators.id",
-            "element_uuid": "element_locators.uuid",
-            "name": "element_locators.name",
-            "type": "element_locators.type",
-            "locator": "element_locators.locator_value",
-            "app_id": "element_locators.application_id",
-            "tenant_id": "element_locators.tenant_id",
-            "created_by_id": "element_locators.created_by",
-            "updated_by_id": "element_locators.updated_by",
+            "element_uuid": "element_locators.tsid",
+            "locator": "element_locators.value",
+            "app_id": "element_locators.application_version_id",
+            "tenant_id": "element_locators.tenant_tsid",
+            "created_by_id": "element_locators.created_by_id",
+            "updated_by_id": "element_locators.updated_by_id",
             "created_at": "element_locators.created_date",
             "updated_at": "element_locators.updated_date",
             "locator_type": "element_locators.locator_type"
@@ -357,14 +343,13 @@ TENANT_MAPPINGS = {
         "primary_key": "test_data_id",
         "column_mappings": {
             "test_data_id": "test_data.id",
-            "test_data_uuid": "test_data.uuid",
-            "name": "test_data.name",
-            "type": "test_data.type",
-            "data_json": "test_data.data_json",
-            "app_id": "test_data.app_id",
-            "tenant_id": "test_data.tenant_id",
-            "created_by_id": "test_data.created_by",
-            "updated_by_id": "test_data.updated_by",
+            "test_data_uuid": "test_data.tsid",
+            "name": "test_data.test_data_name",
+            "data_json": "test_data.columns",
+            "app_id": "test_data.version_id",
+            "tenant_id": "test_data.tenant_tsid",
+            "created_by_id": "test_data.created_by_id",
+            "updated_by_id": "test_data.updated_by_id",
             "created_at": "test_data.created_date",
             "updated_at": "test_data.updated_date",
             "data_id": "test_data.id"
@@ -376,14 +361,13 @@ TENANT_MAPPINGS = {
         "primary_key": "agent_id",
         "column_mappings": {
             "agent_id": "agents.id",
-            "agent_uuid": "agents.uuid",
-            "name": "agents.name",
-            "type": "agents.agent_type",
-            "config_json": "agents.config_json",
+            "agent_uuid": "agents.tsid",
+            "name": "agents.unique_id",
+            "config_json": "agents.browser_list",
             "status": "agents.status",
-            "tenant_id": "agents.tenant_id",
-            "created_by_id": "agents.created_by",
-            "updated_by_id": "agents.updated_by",
+            "tenant_id": "agents.tenant_tsid",
+            "created_by_id": "agents.created_by_id",
+            "updated_by_id": "agents.updated_by_id",
             "created_at": "agents.created_date",
             "updated_at": "agents.updated_date",
             "version": "agents.agent_version",
@@ -397,15 +381,14 @@ TENANT_MAPPINGS = {
         "primary_key": "api_step_id",
         "column_mappings": {
             "api_step_id": "api_steps.id",
-            "test_case_id": "api_steps.test_case_id",
+            "test_step_id": "api_steps.step_id",
             "tenant_id": "api_steps.tenant_tsid",
             "user_id": "api_steps.created_by_id",
-            "step_order": "api_steps.step_order",
-            "method": "api_steps.method",
+            "method": "api_steps.request_type",
             "url": "api_steps.url",
-            "headers_json": "api_steps.headers_json",
-            "body": "api_steps.body",
-            "expected_status": "api_steps.expected_status",
+            "api_type": "api_steps.api_type",
+            "authentication_type": "api_steps.authentication_type",
+            "body_type": "api_steps.body_type",
             "created_at": "api_steps.created_date",
             "updated_at": "api_steps.updated_date"
         }
@@ -434,37 +417,6 @@ TENANT_MAPPINGS = {
         }
     },
     
-    "fct_infrastructure": {
-        "source_tables": ["infrastructure_metrics"],
-        "primary_key": "infrastructure_id",
-        "column_mappings": {
-            "infrastructure_id": "infrastructure_metrics.id",
-            "tenant_id": "infrastructure_metrics.tenant_id",
-            "resource_type": "infrastructure_metrics.resource_type",
-            "resource_name": "infrastructure_metrics.resource_name",
-            "status": "infrastructure_metrics.status",
-            "metrics_json": "infrastructure_metrics.metrics_json",
-            "timestamp": "infrastructure_metrics.timestamp",
-            "created_at": "infrastructure_metrics.created_date",
-            "updated_at": "infrastructure_metrics.updated_date"
-        }
-    },
-    
-    "fct_cross_tenant_metrics": {
-        "source_tables": ["test_plan_result_metrics"],
-        "primary_key": "metric_id",
-        "column_mappings": {
-            "metric_id": "test_plan_result_metrics.id",
-            "tenant_id": "test_plan_result_metrics.tenant_id",
-            "metric_name": "test_plan_result_metrics.metric_name",
-            "metric_value": "test_plan_result_metrics.metric_value",
-            "metric_unit": "test_plan_result_metrics.metric_unit",
-            "timestamp": "test_plan_result_metrics.timestamp",
-            "created_at": "test_plan_result_metrics.created_date",
-            "updated_at": "test_plan_result_metrics.updated_date"
-        }
-    },
-    
     "dim_test_suites": {
         "source_tables": ["test_case_group", "application_version"],
         "primary_key": "test_suite_id",
@@ -481,6 +433,29 @@ TENANT_MAPPINGS = {
             "created_at": "test_case_group.created_date",
             "updated_at": "test_case_group.updated_date",
             "suite_id": "test_case_group.id"
+        }
+    },
+    
+    "fct_cross_tenant_metrics": {
+        "source_tables": ["test_plan_result_metrics"],
+        "primary_key": "metric_id",
+        "column_mappings": {
+            "metric_id": "test_plan_result_metrics.id",
+            "tenant_id": "test_plan_result_metrics.tenant_tsid",
+            "test_plan_result_id": "test_plan_result_metrics.test_plan_result_id",
+            "result": "test_plan_result_metrics.result",
+            "latest_result": "test_plan_result_metrics.latest_result",
+            "total_count": "test_plan_result_metrics.total_count",
+            "failed_count": "test_plan_result_metrics.failed_count",
+            "passed_count": "test_plan_result_metrics.passed_count",
+            "stopped_count": "test_plan_result_metrics.stopped_count",
+            "not_executed_count": "test_plan_result_metrics.not_executed_count",
+            "running_count": "test_plan_result_metrics.running_count",
+            "queued_count": "test_plan_result_metrics.queued_count",
+            "duration": "test_plan_result_metrics.duration",
+            "consolidated_duration": "test_plan_result_metrics.consolidated_duration",
+            "created_at": "test_plan_result_metrics.created_date",
+            "updated_at": "test_plan_result_metrics.updated_date"
         }
     },
     
@@ -511,13 +486,14 @@ TENANT_MAPPINGS = {
         "primary_key": "activity_id",
         "column_mappings": {
             "activity_id": "ai_agent_activity_log.id",
-            "agent_id": "ai_agent_activity_log.agent_id",
+            "agent_id": "ai_agent_activity_log.ai_agent_workflow_id",
             "tenant_id": "ai_agent_activity_log.tenant_tsid",
             "user_id": "ai_agent_activity_log.created_by_id",
-            "activity_type": "ai_agent_activity_log.activity_type",
-            "description": "ai_agent_activity_log.description",
-            "metadata_json": "ai_agent_activity_log.metadata_json",
-            "timestamp": "ai_agent_activity_log.timestamp",
+            "activity_type": "ai_agent_activity_log.agent_type",
+            "description": "ai_agent_activity_log.message",
+            "status": "ai_agent_activity_log.status",
+            "start_time": "ai_agent_activity_log.start_time",
+            "end_time": "ai_agent_activity_log.end_time",
             "created_at": "ai_agent_activity_log.created_date",
             "updated_at": "ai_agent_activity_log.updated_date"
         }
@@ -533,10 +509,9 @@ TENANT_MAPPINGS = {
             "entity_type": "audit_history.entity_model",
             "entity_id": "audit_history.entity_id",
             "user_id": "audit_history.actor_id",
-            "tenant_id": "audit_history.tenant_tsid",
+            "tenant_id": "audit_history.organization_tsid",
             "changes_json": "audit_history.new_entity_data",
             "ip_address": "audit_history.client_ip_address",
-            "user_agent": "audit_history.user_agent",
             "timestamp": "audit_history.action_date",
             "created_at": "audit_history.created_date",
             "updated_at": "audit_history.updated_date",
