@@ -7,6 +7,8 @@ Currently supports SQLite for local development, with extensibility for Snowflak
 
 import sqlite3
 import json
+import tempfile
+import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional
 from pathlib import Path
@@ -393,6 +395,118 @@ class SnowflakeDataSource(DataSource):
             self.logger.error(error_msg)
             raise Exception(error_msg) from e
     
+    def _insert_batch_with_copy(self, table_name: str, rows: List[Dict[str, Any]]) -> bool:
+        """Use COPY command for efficient bulk loading with JSON format"""
+        try:
+            # Create temporary file with JSON data
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as tmp_file:
+                # Write as newline-delimited JSON (NDJSON)
+                for row in rows:
+                    # Process timestamps before writing
+                    processed_row = {}
+                    for col, value in row.items():
+                        if value is None:
+                            processed_row[col] = None
+                        elif isinstance(value, (dict, list)):
+                            processed_row[col] = value  # Keep as-is for JSON
+                        elif col.endswith('_time') or col.endswith('_at') or col == 'timestamp':
+                            # Convert Unix timestamps to ISO format for Snowflake
+                            if isinstance(value, (int, float)) and value > 10000000000:
+                                from datetime import datetime
+                                dt = datetime.fromtimestamp(value / 1000)
+                                processed_row[col] = dt.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+                            else:
+                                processed_row[col] = value
+                        else:
+                            processed_row[col] = value
+                    
+                    json.dump(processed_row, tmp_file)
+                    tmp_file.write('\n')
+                
+                tmp_path = tmp_file.name
+            
+            # Create temporary stage
+            stage_name = f"TEMP_STAGE_{table_name.upper()}_{os.getpid()}"
+            self.cursor.execute(f"CREATE TEMPORARY STAGE IF NOT EXISTS {stage_name}")
+            
+            # Upload file to stage (auto-compress for better performance)
+            put_sql = f"PUT file://{tmp_path} @{stage_name} AUTO_COMPRESS=TRUE OVERWRITE=TRUE"
+            self.cursor.execute(put_sql)
+            put_result = self.cursor.fetchone()
+            self.logger.debug(f"PUT result: {put_result}")
+            
+            # Create or replace file format for NDJSON
+            self.cursor.execute("""
+                CREATE OR REPLACE FILE FORMAT TEMP_JSON_FORMAT
+                TYPE = 'JSON'
+                STRIP_OUTER_ARRAY = FALSE
+                ENABLE_OCTAL = FALSE
+                ALLOW_DUPLICATE = FALSE
+                STRIP_NULL_VALUES = FALSE
+            """)
+            
+            # Get file name in stage (it might be compressed)
+            list_sql = f"LIST @{stage_name}"
+            self.cursor.execute(list_sql)
+            files = self.cursor.fetchall()
+            if not files:
+                raise Exception("No files found in stage after PUT")
+            
+            staged_file = files[0][0]  # Get the file name
+            
+            # COPY into table with column matching
+            copy_sql = f"""
+                COPY INTO {table_name}
+                FROM @{stage_name}/{os.path.basename(staged_file)}
+                FILE_FORMAT = (FORMAT_NAME = 'TEMP_JSON_FORMAT')
+                MATCH_BY_COLUMN_NAME = CASE_INSENSITIVE
+                ON_ERROR = 'CONTINUE'
+                PURGE = TRUE
+            """
+            
+            self.cursor.execute(copy_sql)
+            copy_result = self.cursor.fetchone()
+            
+            # Parse COPY results
+            if copy_result:
+                rows_loaded = copy_result[0]
+                rows_parsed = copy_result[1]
+                rows_failed = rows_parsed - rows_loaded
+                
+                if rows_failed > 0:
+                    self.logger.warning(f"⚠️  {rows_failed} rows failed during COPY for {table_name}")
+                    # Get error details
+                    self.cursor.execute(f"""
+                        SELECT * FROM TABLE(VALIDATE({table_name}, JOB_ID => '{self.cursor.sfqid}'))
+                        LIMIT 10
+                    """)
+                    errors = self.cursor.fetchall()
+                    for error in errors:
+                        self.logger.error(f"COPY error: {error}")
+                
+                self.logger.info(f"✅ COPY loaded {rows_loaded}/{len(rows)} rows into {table_name}")
+            
+            # Cleanup
+            os.unlink(tmp_path)
+            self.cursor.execute(f"DROP STAGE IF EXISTS {stage_name}")
+            
+            # Commit transaction
+            self.connection.commit()
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"COPY failed for {table_name}: {e}")
+            # Cleanup on error
+            if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            if 'stage_name' in locals():
+                try:
+                    self.cursor.execute(f"DROP STAGE IF EXISTS {stage_name}")
+                except:
+                    pass
+            raise
+    
     def insert_batch(self, table_name: str, rows: List[Dict[str, Any]]) -> bool:
         """Insert a batch of rows into Snowflake table"""
         if not rows:
@@ -400,8 +514,15 @@ class SnowflakeDataSource(DataSource):
             return True
         
         try:
-            # First, truncate existing data (optional - remove if you want to append)
-            # self.cursor.execute(f"TRUNCATE TABLE {table_name}")
+            # Use COPY for large datasets (>500 rows) for better performance
+            COPY_THRESHOLD = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '500'))
+            
+            if len(rows) >= COPY_THRESHOLD:
+                self.logger.info(f"Using COPY for {table_name} ({len(rows)} rows >= {COPY_THRESHOLD} threshold)")
+                return self._insert_batch_with_copy(table_name, rows)
+            
+            # Use regular INSERT for smaller datasets
+            self.logger.info(f"Using INSERT for {table_name} ({len(rows)} rows < {COPY_THRESHOLD} threshold)")
             
             # Get column names from first row
             columns = list(rows[0].keys())

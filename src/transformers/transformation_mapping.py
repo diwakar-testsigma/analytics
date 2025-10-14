@@ -201,16 +201,13 @@ MASTER_MAPPINGS = {
         "primary_key": "object_type_id",
         "column_mappings": {
             "object_type_id": "object_types.id",
-            "name": "object_types.name",
-            "description": "object_types.description",
-            "category": "object_types.category",
-            "is_active": "object_types.is_active",
-            "created_at": "object_types.created_at_epoch",
-            "updated_at": "object_types.updated_at_epoch",
+            "name": "object_types.object_display_name",
             "display_name": "object_types.object_display_name",
             "class_name": "object_types.object_class_name",
             "technology": "object_types.technology",
-            "package_name": "object_types.package_name"
+            "package_name": "object_types.package_name",
+            "created_at": "object_types.created_at_epoch",
+            "updated_at": "object_types.updated_at__epoch"
         }
     }
 }
@@ -218,6 +215,22 @@ MASTER_MAPPINGS = {
 # ===== TENANT SCHEMA MAPPINGS =====
 
 TENANT_MAPPINGS = {
+    "dim_projects": {
+        "source_tables": ["project"],
+        "primary_key": "project_id",
+        "column_mappings": {
+            "project_id": "project.id",
+            "project_uuid": "project.tsid",
+            "name": "project.name",
+            "description": "project.description",
+            "tenant_id": "project.tenant_tsid",
+            "created_by_id": "project.created_by_id",
+            "updated_by_id": "project.updated_by_id",
+            "created_at": "project.created_date",
+            "updated_at": "project.updated_date"
+        }
+    },
+    
     "dim_applications": {
         "source_tables": ["application", "application_version"],
         "primary_key": "app_id",
@@ -250,7 +263,12 @@ TENANT_MAPPINGS = {
             "created_by_id": "test_case.created_by_id",
             "updated_by_id": "test_case.updated_by_id",
             "created_at": "test_case.created_date",
-            "updated_at": "test_case.updated_date"
+            "updated_at": "test_case.updated_date",
+            "creation_type": "test_case.create_type_enum",
+            "is_manual": "test_case.is_manual",
+            "is_ai_generated": "test_case.is_ai_generated",
+            "is_data_driven": "test_case.is_data_driven",
+            "is_step_group": "test_case.is_step_group"
         }
     },
     
@@ -287,6 +305,7 @@ TENANT_MAPPINGS = {
             "end_time": "execution_result.end_time",
             "duration_seconds": "execution_result.duration",
             "triggered_by": "execution_result.triggered_type",
+            "trigger_type": "execution_result.triggered_type",
             "environment_type": "execution.execution_type_enum",
             "created_at": "execution.created_date",
             "updated_at": "execution.updated_date"
@@ -462,6 +481,28 @@ TENANT_MAPPINGS = {
             "created_at": "test_case_group.created_date",
             "updated_at": "test_case_group.updated_date",
             "suite_id": "test_case_group.id"
+        }
+    },
+    
+    "fct_test_plan_results": {
+        "source_tables": ["test_plan_result_metrics", "execution_result"],
+        "primary_key": "test_plan_result_id",
+        "column_mappings": {
+            "test_plan_result_id": "test_plan_result_metrics.test_plan_result_id",
+            "test_plan_id": "execution_result.execution_id",
+            "tenant_id": "test_plan_result_metrics.tenant_tsid",
+            "user_id": "execution_result.executed_by",
+            "status": "test_plan_result_metrics.result",
+            "latest_status": "test_plan_result_metrics.latest_result",
+            "start_time": "execution_result.start_time",
+            "end_time": "execution_result.end_time",
+            "duration_seconds": "execution_result.duration",
+            "total_count": "test_plan_result_metrics.total_count",
+            "passed_count": "test_plan_result_metrics.passed_count",
+            "failed_count": "test_plan_result_metrics.failed_count",
+            "trigger_type": "execution_result.triggered_type",
+            "created_at": "execution_result.created_date",
+            "updated_at": "execution_result.updated_date"
         }
     },
     

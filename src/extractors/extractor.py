@@ -102,8 +102,7 @@ class DataExtractor(BaseExtractor):
                 'date_filtering': {
                     'start_date': start_date,
                     'end_date': settings.EXTRACT_END_DATE,
-                    'days_count': settings.EXTRACT_DAYS_COUNT,
-                    'date_column': settings.EXTRACT_DATE_COLUMN
+                    'days_count': settings.EXTRACT_DAYS_COUNT
                 }
             }
     
@@ -204,41 +203,64 @@ class DataExtractor(BaseExtractor):
         
         return start_date, end_date
     
-    def _has_date_column(self, database: str, table_name: str) -> bool:
+    def _has_date_column(self, database: str, table_name: str) -> tuple:
         """
-        Check if table has the configured date column
+        Check if table has a date column for filtering and return the column name
         
         Args:
             database: Database name
             table_name: Table name
             
         Returns:
-            True if table has the date column, False otherwise
+            Tuple of (has_column: bool, column_name: str or None)
         """
         try:
             conn = self.get_connection(self.config, database)
             cursor = conn.cursor()
             
-            date_column = self.config.get('date_filtering', {}).get('date_column', 'updated_at')
-            cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (date_column,))
-            result = cursor.fetchone()
+            # Hardcoded priority: Check for epoch columns first, then regular date columns
+            # Priority 1: Epoch columns (most accurate for filtering)
+            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch', 'created_at_epoch']
+            
+            for col in epoch_columns:
+                cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
+                result = cursor.fetchone()
+                if result:
+                    self.logger.info(f"Using epoch date column '{col}' for {database}.{table_name}")
+                    cursor.close()
+                    conn.close()
+                    return True, col
+            
+            # Priority 2: Regular date/datetime columns
+            date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
+            
+            for col in date_columns:
+                cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
+                result = cursor.fetchone()
+                if result:
+                    self.logger.info(f"Using date column '{col}' for {database}.{table_name}")
+                    cursor.close()
+                    conn.close()
+                    return True, col
             
             cursor.close()
             conn.close()
             
-            return result is not None
+            self.logger.debug(f"No suitable date column found in {database}.{table_name} - will extract all data")
+            return False, None
             
         except Exception as e:
             self.logger.warning(f"Could not check date column for {database}.{table_name}: {e}")
-            return False
+            return False, None
     
-    def _build_date_filter_query(self, table_name: str, base_query: str) -> Tuple[str, List]:
+    def _build_date_filter_query(self, table_name: str, base_query: str, date_column: str = None) -> Tuple[str, List]:
         """
         Build query with date filtering
         
         Args:
             table_name: Table name
             base_query: Base SELECT query
+            date_column: Date column to use for filtering (optional)
             
         Returns:
             Tuple of (modified_query, parameters)
@@ -248,19 +270,43 @@ class DataExtractor(BaseExtractor):
         if not start_date and not end_date:
             return base_query, []
         
-        date_column = self.config.get('date_filtering', {}).get('date_column', 'updated_at')
+        # Use provided date column or fall back to configured one
+        if not date_column:
+            date_column = self.config.get('date_filtering', {}).get('date_column', 'updated_at')
+        
         params = []
         
         # Add WHERE clause for date filtering
         where_conditions = []
         
+        # Check if this is an epoch column
+        is_epoch_column = '_epoch' in date_column.lower()
+        
         if start_date:
-            where_conditions.append(f"{date_column} >= %s")
-            params.append(start_date)
+            if is_epoch_column:
+                # Convert date to epoch at 6:00 PM (18:00)
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                start_dt = start_dt.replace(hour=18, minute=0, second=0)  # 6:00 PM
+                start_epoch = int(start_dt.timestamp() * 1000)  # Convert to milliseconds
+                where_conditions.append(f"{date_column} >= %s")
+                params.append(start_epoch)
+                self.logger.debug(f"Start date {start_date} 18:00 converted to epoch: {start_epoch}")
+            else:
+                where_conditions.append(f"{date_column} >= %s")
+                params.append(start_date)
         
         if end_date:
-            where_conditions.append(f"{date_column} <= %s")
-            params.append(end_date)
+            if is_epoch_column:
+                # Convert date to epoch at 6:00 PM (18:00) of the end date
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                end_dt = end_dt.replace(hour=18, minute=0, second=0)  # 6:00 PM
+                end_epoch = int(end_dt.timestamp() * 1000)  # Convert to milliseconds
+                where_conditions.append(f"{date_column} <= %s")
+                params.append(end_epoch)
+                self.logger.debug(f"End date {end_date} 18:00 converted to epoch: {end_epoch}")
+            else:
+                where_conditions.append(f"{date_column} <= %s")
+                params.append(end_date)
         
         if where_conditions:
             where_clause = " AND ".join(where_conditions)
@@ -294,12 +340,12 @@ class DataExtractor(BaseExtractor):
         cursor = conn.cursor()
         
         # Check if table has date column for filtering
-        has_date_column = self._has_date_column(database, table_name)
+        has_date_column, date_column = self._has_date_column(database, table_name)
         
         if has_date_column:
             # Use date filtering
             base_query = f"SELECT COUNT(*) FROM {table_name}"
-            query, params = self._build_date_filter_query(table_name, base_query)
+            query, params = self._build_date_filter_query(table_name, base_query, date_column)
             cursor.execute(query, params)
         else:
             # No date filtering
@@ -319,12 +365,12 @@ class DataExtractor(BaseExtractor):
             cursor = conn.cursor(dictionary=True)
             
             # Check if table has date column for filtering
-            has_date_column = self._has_date_column(database, table_name)
+            has_date_column, date_column = self._has_date_column(database, table_name)
             
             if has_date_column:
                 # Use date filtering
                 base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
-                query, params = self._build_date_filter_query(table_name, base_query)
+                query, params = self._build_date_filter_query(table_name, base_query, date_column)
                 # Add LIMIT and OFFSET parameters
                 params.extend([self.config['extraction']['batch_size'], offset])
                 cursor.execute(query, params)
@@ -391,7 +437,7 @@ class DataExtractor(BaseExtractor):
         
         # Prepare output data
         start_date, end_date = self._get_date_filter_params()
-        has_date_column = self._has_date_column(database, table_name)
+        has_date_column, date_column = self._has_date_column(database, table_name)
         
         output_data = {
             'database': database,
@@ -402,8 +448,9 @@ class DataExtractor(BaseExtractor):
                 'enabled': has_date_column and (start_date or end_date),
                 'start_date': start_date,
                 'end_date': end_date,
-                'date_column': self.config.get('date_filtering', {}).get('date_column', 'updated_at'),
-                'table_has_date_column': has_date_column
+                'date_column': date_column if date_column else self.config.get('date_filtering', {}).get('date_column', 'updated_at'),
+                'table_has_date_column': has_date_column,
+                'actual_column_used': date_column if has_date_column else None
             },
             'data': data
         }
@@ -554,6 +601,6 @@ class DataExtractor(BaseExtractor):
 
 if __name__ == "__main__":
     # Example usage
-    extractor = MySQLExtractor()
+    extractor = DataExtractor()
     extracted_file = extractor.extract()
     print(f"Extraction complete: {extracted_file}")

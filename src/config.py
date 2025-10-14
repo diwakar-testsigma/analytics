@@ -48,7 +48,6 @@ class Settings:
     EXTRACT_START_DATE: str = os.getenv('EXTRACT_START_DATE', '')
     EXTRACT_END_DATE: str = os.getenv('EXTRACT_END_DATE', '')
     EXTRACT_DAYS_COUNT: str = os.getenv('EXTRACT_DAYS_COUNT', '')
-    EXTRACT_DATE_COLUMN: str = os.getenv('EXTRACT_DATE_COLUMN', 'updated_at')
     
     # Transformation Configuration
     TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS', '10'))
@@ -64,6 +63,9 @@ class Settings:
     MAX_MEMORY_USAGE: int = int(os.getenv('MAX_MEMORY_USAGE', '80'))
     CLEANUP_TEMP_FILES: bool = os.getenv('CLEANUP_TEMP_FILES', 'true').lower() == 'true'
     ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING', 'true').lower() == 'true'
+    
+    # Snowflake Optimization Configuration
+    SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '500'))
     
     # Loading Strategy Configuration
     LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY', 'continue_on_error')  # Options: continue_on_error, fail_fast
