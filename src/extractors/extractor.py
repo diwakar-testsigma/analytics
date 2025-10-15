@@ -143,7 +143,6 @@ class DataExtractor(BaseExtractor):
             'autocommit': True,
             'connect_timeout': 30,
             'read_timeout': 300,  # 5 minutes for large queries
-            'cursorclass': pymysql.cursors.DictCursor,  # Return dictionaries
         }
         
         # Add database if specified in URL or parameter
@@ -370,8 +369,8 @@ class DataExtractor(BaseExtractor):
         cursor = None
         try:
             conn = self.get_connection(self.config, database)
-            # PyMySQL already returns DictCursor from connection params
-            cursor = conn.cursor()
+            # Use DictCursor for table data extraction to get dictionaries
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
             
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)
