@@ -18,7 +18,7 @@ class Settings:
     """Application settings loaded from environment variables"""
     
     # Environment
-    ENVIRONMENT: str = os.getenv('ENVIRONMENT', 'local')
+    ENVIRONMENT: str = os.getenv('ENVIRONMENT')
     
     # Database Connection URLs
     MYSQL_CONNECTION_URL: str = os.getenv('MYSQL_CONNECTION_URL')
@@ -26,69 +26,67 @@ class Settings:
     SQLITE_CONNECTION_URL: str = os.getenv('SQLITE_CONNECTION_URL')
     
     # Data Store Configuration
-    DATA_STORE: str = os.getenv('DATA_STORE', 'sqlite')
+    DATA_STORE: str = os.getenv('DATA_STORE')
     
     # ETL Configuration
-    BATCH_SIZE: int = int(os.getenv('BATCH_SIZE', '1000'))
-    PARALLEL_WORKERS: int = int(os.getenv('PARALLEL_WORKERS', '4'))
-    LOG_LEVEL: str = os.getenv('LOG_LEVEL', 'INFO')
+    BATCH_SIZE: int = int(os.getenv('BATCH_SIZE'))
+    PARALLEL_WORKERS: int = int(os.getenv('PARALLEL_WORKERS'))
+    LOG_LEVEL: str = os.getenv('LOG_LEVEL')
     
     # Directory Configuration
-    OUTPUT_DIR: str = os.getenv('OUTPUT_DIR', 'output')
-    LOG_DIR: str = os.getenv('LOG_DIR', 'logs')
-    TRANSFORMED_OUTPUT_DIR: str = os.getenv('TRANSFORMED_OUTPUT_DIR', 'output/transformations')
+    OUTPUT_DIR: str = os.getenv('OUTPUT_DIR')
+    LOG_DIR: str = os.getenv('LOG_DIR')
+    TRANSFORMED_OUTPUT_DIR: str = os.getenv('TRANSFORMED_OUTPUT_DIR')
     
     # Extraction Configuration
-    EXTRACTION_WORKERS: int = int(os.getenv('EXTRACTION_WORKERS', '10'))
-    EXTRACTION_BATCH_SIZE: int = int(os.getenv('EXTRACTION_BATCH_SIZE', '5000'))
-    EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES', '')
-    EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS', '')
+    EXTRACTION_WORKERS: int = int(os.getenv('EXTRACTION_WORKERS'))
+    EXTRACTION_BATCH_SIZE: int = int(os.getenv('EXTRACTION_BATCH_SIZE'))
+    EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')
+    EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
     
-    # Date Filtering Configuration
-    EXTRACT_START_DATE: str = os.getenv('EXTRACT_START_DATE', '')
-    EXTRACT_END_DATE: str = os.getenv('EXTRACT_END_DATE', '')
-    EXTRACT_DAYS_COUNT: str = os.getenv('EXTRACT_DAYS_COUNT', '')
+    # Date Filtering Configuration (strip inline comments)
+    EXTRACT_START_DATE: str = (os.getenv('EXTRACT_START_DATE') or '').split('#')[0].strip()
+    EXTRACT_END_DATE: str = (os.getenv('EXTRACT_END_DATE') or '').split('#')[0].strip()
+    EXTRACT_DAYS_COUNT: str = (os.getenv('EXTRACT_DAYS_COUNT') or '').split('#')[0].strip()
     
     # Transformation Configuration
-    TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS', '10'))
-    TRANSFORMATION_BATCH_SIZE: int = int(os.getenv('TRANSFORMATION_BATCH_SIZE', '5000'))
-    TRANSFORMATION_TIMEOUT: int = int(os.getenv('TRANSFORMATION_TIMEOUT', '300'))
+    TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS'))
+    TRANSFORMATION_BATCH_SIZE: int = int(os.getenv('TRANSFORMATION_BATCH_SIZE'))
+    TRANSFORMATION_TIMEOUT: int = int(os.getenv('TRANSFORMATION_TIMEOUT'))
     
     # Database Connection Configuration
-    CONNECTION_TIMEOUT: int = int(os.getenv('CONNECTION_TIMEOUT', '30'))
-    CONNECTION_RETRY_COUNT: int = int(os.getenv('CONNECTION_RETRY_COUNT', '3'))
-    CONNECTION_RETRY_DELAY: int = int(os.getenv('CONNECTION_RETRY_DELAY', '5'))
+    CONNECTION_TIMEOUT: int = int(os.getenv('CONNECTION_TIMEOUT'))
+    CONNECTION_RETRY_COUNT: int = int(os.getenv('CONNECTION_RETRY_COUNT'))
+    CONNECTION_RETRY_DELAY: int = int(os.getenv('CONNECTION_RETRY_DELAY'))
     
     # Performance Configuration
-    MAX_MEMORY_USAGE: int = int(os.getenv('MAX_MEMORY_USAGE', '80'))
-    CLEANUP_TEMP_FILES: bool = os.getenv('CLEANUP_TEMP_FILES', 'true').lower() == 'true'
-    ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING', 'true').lower() == 'true'
+    MAX_MEMORY_USAGE: int = int(os.getenv('MAX_MEMORY_USAGE'))
+    CLEANUP_TEMP_FILES: bool = os.getenv('CLEANUP_TEMP_FILES').lower() == 'true'
+    ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING').lower() == 'true'
     
     # Snowflake Optimization Configuration
-    # Use COPY command for batches >= 500 rows for better performance
-    # Falls back to INSERT if SSL certificate issues occur
-    SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '500'))
+    SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD'))
     
     # Loading Strategy Configuration
-    LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY', 'continue_on_error')  # Options: continue_on_error, fail_fast
+    LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY')
     
     # Incremental Loading Configuration
-    AUTO_UPDATE_START_DATE: bool = os.getenv('AUTO_UPDATE_START_DATE', 'true').lower() == 'true'
-    EXTRACT_CHECKPOINT_FILE: str = os.getenv('EXTRACT_CHECKPOINT_FILE', '.extract_checkpoint')
+    AUTO_UPDATE_START_DATE: bool = os.getenv('AUTO_UPDATE_START_DATE').lower() == 'true'
+    EXTRACT_CHECKPOINT_FILE: str = os.getenv('EXTRACT_CHECKPOINT_FILE')
     
     # Notification Configuration
-    ENABLE_NOTIFICATIONS: bool = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
-    SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL', '')
-    NOTIFICATION_ON_SUCCESS: bool = os.getenv('NOTIFICATION_ON_SUCCESS', 'false').lower() == 'true'
-    NOTIFICATION_ON_FAILURE: bool = os.getenv('NOTIFICATION_ON_FAILURE', 'true').lower() == 'true'
-    NOTIFICATION_ON_PARTIAL: bool = os.getenv('NOTIFICATION_ON_PARTIAL', 'true').lower() == 'true'
+    ENABLE_NOTIFICATIONS: bool = os.getenv('ENABLE_NOTIFICATIONS').lower() == 'true'
+    SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL')
+    NOTIFICATION_ON_SUCCESS: bool = os.getenv('NOTIFICATION_ON_SUCCESS').lower() == 'true'
+    NOTIFICATION_ON_FAILURE: bool = os.getenv('NOTIFICATION_ON_FAILURE').lower() == 'true'
+    NOTIFICATION_ON_PARTIAL: bool = os.getenv('NOTIFICATION_ON_PARTIAL').lower() == 'true'
     
     # Scheduling Configuration
-    ETL_SCHEDULE_CRON: str = os.getenv('ETL_SCHEDULE_CRON', '0 2 * * *')
-    RUN_ON_STARTUP: bool = os.getenv('RUN_ON_STARTUP', 'false').lower() == 'true'
+    ETL_SCHEDULE_CRON: str = os.getenv('ETL_SCHEDULE_CRON')
+    RUN_ON_STARTUP: bool = os.getenv('RUN_ON_STARTUP').lower() == 'true'
     
     # Derived paths
-    EXTRACTED_OUTPUT_DIR: str = os.path.join(os.getenv('OUTPUT_DIR', 'output'), 'extracted')
+    EXTRACTED_OUTPUT_DIR: str = os.path.join(os.getenv('OUTPUT_DIR'), 'extracted')
     
     def __post_init__(self):
         """Create necessary directories after initialization"""

@@ -186,24 +186,37 @@ class DataExtractor(BaseExtractor):
         Get start and end dates for filtering based on configuration
         
         Returns:
-            Tuple of (start_date, end_date) in YYYY-MM-DD format
+            Tuple of (start_date, end_date) in YYYY-MM-DD format or (None, None) if disabled
         """
         date_config = self.config.get('date_filtering', {})
-        start_date = date_config.get('start_date')
-        end_date = date_config.get('end_date')
-        days_count = date_config.get('days_count')
+        start_date = date_config.get('start_date', '').strip()
+        end_date = date_config.get('end_date', '').strip()
+        days_count = date_config.get('days_count', '').strip()
+        
+        # Clean up inline comments from .env file
+        if start_date and '#' in start_date:
+            start_date = start_date.split('#')[0].strip()
+        if end_date and '#' in end_date:
+            end_date = end_date.split('#')[0].strip()
+        if days_count and '#' in days_count:
+            days_count = days_count.split('#')[0].strip()
+        
+        # If any value is empty after cleanup, disable date filtering
+        if not start_date:
+            self.logger.info("No start_date configured - extracting ALL data without date filtering")
+            return None, None
         
         # If days_count is specified, calculate end_date from start_date
         if start_date and days_count:
             try:
                 start_dt = datetime.strptime(start_date, '%Y-%m-%d')
                 # Convert days_count to int if it's a string
-                days_count_int = int(days_count) if isinstance(days_count, str) else days_count
+                days_count_int = int(days_count)
                 end_dt = start_dt + timedelta(days=days_count_int)
                 end_date = end_dt.strftime('%Y-%m-%d')
-                self.logger.info(f"Calculated end_date: {end_date} (start_date: {start_date} + {days_count_int} days)")
-            except ValueError as e:
-                self.logger.error(f"Invalid start_date format: {start_date}. Expected YYYY-MM-DD")
+                self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days)")
+            except (ValueError, TypeError) as e:
+                self.logger.warning(f"Invalid date configuration: start_date={start_date}, days_count={days_count}. Disabling date filtering.")
                 return None, None
         
         return start_date, end_date
@@ -347,16 +360,23 @@ class DataExtractor(BaseExtractor):
         # Check if table has date column for filtering
         has_date_column, date_column = self._has_date_column(database, table_name)
         
-        if has_date_column:
+        # Get date filter params to check if filtering is actually enabled
+        start_date, end_date = self._get_date_filter_params()
+        
+        if has_date_column and (start_date or end_date):
             # Use date filtering
             base_query = f"SELECT COUNT(*) FROM {table_name}"
             query, params = self._build_date_filter_query(table_name, base_query, date_column)
             cursor.execute(query, params)
+            self.logger.debug(f"Count query with date filter for {database}.{table_name}")
         else:
-            # No date filtering
+            # No date filtering - count all data
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            if not (start_date or end_date):
+                self.logger.debug(f"Count query without date filter for {database}.{table_name}: counting all rows")
         
-        count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        count = result[0] if result else 0
         
         cursor.close()
         conn.close()
@@ -375,7 +395,10 @@ class DataExtractor(BaseExtractor):
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)
             
-            if has_date_column:
+            # Get date filter params to check if filtering is actually enabled
+            start_date, end_date = self._get_date_filter_params()
+            
+            if has_date_column and (start_date or end_date):
                 # Use date filtering
                 base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 query, params = self._build_date_filter_query(table_name, base_query, date_column)
@@ -383,7 +406,7 @@ class DataExtractor(BaseExtractor):
                 params.extend([self.config['extraction']['batch_size'], offset])
                 cursor.execute(query, params)
             else:
-                # No date filtering
+                # No date filtering - extract all data
                 query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 cursor.execute(query, (self.config['extraction']['batch_size'], offset))
             
@@ -410,18 +433,26 @@ class DataExtractor(BaseExtractor):
                 pass
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
-        """Extract all data from a table using parallel batch processing"""
+        """Extract all data from a table - optimized for speed and stability"""
         total_rows = self.get_table_count(database, table_name)
         self.logger.info(f"Extracting {total_rows} rows from {database}.{table_name}")
         
         if total_rows == 0:
             return []
         
+        # For small tables (<10k rows), extract in single batch (faster)
+        if total_rows < 10000:
+            return self.extract_table_batch(database, table_name, 0)
+        
+        # For large tables, use parallel extraction with optimized worker count
         all_data = []
         offsets = list(range(0, total_rows, self.config['extraction']['batch_size']))
         
+        # Limit workers based on table size to avoid overhead
+        optimal_workers = min(self.config['extraction']['workers'], max(1, len(offsets) // 2))
+        
         # Use ThreadPoolExecutor for parallel extraction
-        with ThreadPoolExecutor(max_workers=self.config['extraction']['workers']) as executor:
+        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
             future_to_offset = {
                 executor.submit(self.extract_table_batch, database, table_name, offset): offset 
                 for offset in offsets
