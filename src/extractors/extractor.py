@@ -13,7 +13,8 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
-import mysql.connector
+import pymysql
+import pymysql.cursors
 import atexit
 import gc
 
@@ -109,14 +110,14 @@ class DataExtractor(BaseExtractor):
     @staticmethod
     def get_connection(config: Dict, database: Optional[str] = None):
         """
-        Create MySQL connection
+        Create MySQL connection using PyMySQL (more stable than mysql-connector)
         
         Args:
             config: Configuration dictionary
             database: Optional database name to connect to
             
         Returns:
-            MySQL connection object
+            PyMySQL connection object
         """
         from urllib.parse import urlparse
         
@@ -137,7 +138,12 @@ class DataExtractor(BaseExtractor):
             'host': parsed.hostname,
             'port': parsed.port if parsed.port else 3306,
             'user': parsed.username,
-            'password': parsed.password
+            'password': parsed.password,
+            'charset': 'utf8mb4',
+            'autocommit': True,
+            'connect_timeout': 30,
+            'read_timeout': 300,  # 5 minutes for large queries
+            'cursorclass': pymysql.cursors.DictCursor,  # Return dictionaries
         }
         
         # Add database if specified in URL or parameter
@@ -146,7 +152,7 @@ class DataExtractor(BaseExtractor):
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
             
-        return mysql.connector.connect(**connection_params)
+        return pymysql.connect(**connection_params)
     
     def list_databases(self) -> List[str]:
         """Get list of databases, excluding system and ignored databases"""
@@ -360,9 +366,12 @@ class DataExtractor(BaseExtractor):
     
     def extract_table_batch(self, database: str, table_name: str, offset: int) -> List[Dict[str, Any]]:
         """Extract a batch of rows from a table with optional date filtering"""
+        conn = None
+        cursor = None
         try:
             conn = self.get_connection(self.config, database)
-            cursor = conn.cursor(dictionary=True)
+            # PyMySQL already returns DictCursor from connection params
+            cursor = conn.cursor()
             
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)
@@ -379,16 +388,27 @@ class DataExtractor(BaseExtractor):
                 query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 cursor.execute(query, (self.config['extraction']['batch_size'], offset))
             
+            # Fetch all results - PyMySQL handles None values properly
             results = cursor.fetchall()
             
-            cursor.close()
-            conn.close()
-            
-            return results
+            # PyMySQL already returns proper dictionaries, no conversion needed
+            return results if results else []
             
         except Exception as e:
             self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
             return []
+        finally:
+            # Ensure proper cleanup in all cases
+            try:
+                if cursor is not None:
+                    cursor.close()
+            except:
+                pass
+            try:
+                if conn is not None:
+                    conn.close()
+            except:
+                pass
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table using parallel batch processing"""

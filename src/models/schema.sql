@@ -436,9 +436,53 @@ CREATE TABLE IF NOT EXISTS etl_run_log (
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
--- Clustering and Partitioning
-ALTER TABLE fct_executions CLUSTER BY (start_time);
+-- ===== CLUSTERING STRATEGY =====
+-- Optimized clustering based on query patterns from all dashboards
+-- Clustering reduces data scanning and improves query performance significantly
+
+-- DIMENSION TABLES
+-- Users: Heavily queried by account_id and login activity
+ALTER TABLE dim_users CLUSTER BY (account_id, last_logged_in_at);
+
+-- Test Cases: Filtered by tenant, creation date, and status
+ALTER TABLE dim_test_cases CLUSTER BY (tenant_id, created_at, status);
+
+-- Accounts: Primary key lookups and joins
+ALTER TABLE dim_accounts CLUSTER BY (account_id);
+
+-- Tenants: Filtered by subscription status and tenant_id
+ALTER TABLE dim_tenants CLUSTER BY (subscription_status, tenant_id);
+
+-- Applications: Filtered by tenant and app_id
+ALTER TABLE dim_applications CLUSTER BY (tenant_id, app_id);
+
+-- Test Suites: Tenant-based filtering
+ALTER TABLE dim_test_suites CLUSTER BY (tenant_id, created_at);
+
+-- FACT TABLES
+-- Executions: Most queries filter by tenant and time range
+ALTER TABLE fct_executions CLUSTER BY (tenant_id, start_time);
+
+-- Test Results: Joined on execution_id and filtered by time
 ALTER TABLE fct_test_results CLUSTER BY (execution_id, start_time);
+
+-- Test Steps: Always joined on test_case_id
 ALTER TABLE fct_test_steps CLUSTER BY (test_case_id);
-ALTER TABLE fct_cross_tenant_metrics CLUSTER BY (tenant_id, timestamp);
-ALTER TABLE fct_infrastructure CLUSTER BY (tenant_id, timestamp);
+
+-- Test Plan Results: Filtered by tenant and time
+ALTER TABLE fct_test_plan_results CLUSTER BY (tenant_id, created_at);
+
+-- Cross Tenant Metrics: Tenant-based aggregations
+ALTER TABLE fct_cross_tenant_metrics CLUSTER BY (tenant_id, created_at);
+
+-- Audit Events: Time-series queries by tenant
+ALTER TABLE fct_audit_events CLUSTER BY (tenant_id, timestamp);
+
+-- Agent Activity: Filtered by tenant and time
+ALTER TABLE fct_agent_activity CLUSTER BY (tenant_id, start_time);
+
+-- API Steps: Filtered by tenant
+ALTER TABLE fct_api_steps CLUSTER BY (tenant_id, created_at);
+
+-- Accessibility Results: Tenant and execution based queries
+ALTER TABLE fct_accessibility_results CLUSTER BY (tenant_id, execution_id);

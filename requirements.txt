@@ -1,5 +1,5 @@
 # Database connectors
-mysql-connector-python==8.0.33
+PyMySQL==1.1.0
 snowflake-connector-python==4.0.0
 psycopg2-binary==2.9.7
 
