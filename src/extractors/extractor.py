@@ -189,9 +189,9 @@ class DataExtractor(BaseExtractor):
             Tuple of (start_date, end_date) in YYYY-MM-DD format or (None, None) if disabled
         """
         date_config = self.config.get('date_filtering', {})
-        start_date = date_config.get('start_date', '').strip()
-        end_date = date_config.get('end_date', '').strip()
-        days_count = date_config.get('days_count', '').strip()
+        start_date = (date_config.get('start_date') or '').strip()
+        end_date = (date_config.get('end_date') or '').strip()
+        days_count = (date_config.get('days_count') or '').strip()
         
         # Clean up inline comments from .env file
         if start_date and '#' in start_date:
