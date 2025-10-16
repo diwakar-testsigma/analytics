@@ -46,8 +46,8 @@ class Settings:
     
     # Date Filtering Configuration (strip inline comments)
     EXTRACT_START_DATE: str = (os.getenv('EXTRACT_START_DATE') or '').split('#')[0].strip()
-    EXTRACT_END_DATE: str = (os.getenv('EXTRACT_END_DATE') or '').split('#')[0].strip()
     EXTRACT_DAYS_COUNT: str = (os.getenv('EXTRACT_DAYS_COUNT') or '').split('#')[0].strip()
+    EXTRACT_HOURS_COUNT: str = (os.getenv('EXTRACT_HOURS_COUNT') or '').split('#')[0].strip()
     
     # Transformation Configuration
     TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS'))

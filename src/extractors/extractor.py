@@ -84,11 +84,18 @@ class DataExtractor(BaseExtractor):
                 start_date = self.custom_config['extraction_start_date_override']
                 # Logger not available yet, will log after initialization
             else:
-                # Get start date from checkpoint if not explicitly set
+                # Get start date - explicit empty value means NO filtering
                 start_date = settings.EXTRACT_START_DATE
-                if settings.AUTO_UPDATE_START_DATE and not start_date:
-                    start_date = checkpoint.get_last_extraction_date()
-                    # Logger not available yet, will log after initialization
+                # Only use checkpoint if EXTRACT_START_DATE variable doesn't exist in .env at all
+                # Empty string in .env = explicit choice to disable filtering
+                # Use checkpoint only if we got None (variable not in .env)
+                if not start_date and settings.AUTO_UPDATE_START_DATE:
+                    # Check if the .env actually has the variable (even if empty)
+                    import os
+                    if 'EXTRACT_START_DATE' not in os.environ:
+                        # Variable not in .env, use checkpoint
+                        start_date = checkpoint.get_last_extraction_date()
+                    # else: Variable is in .env but empty - respect the empty value
             
             return {
                 'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
@@ -102,8 +109,8 @@ class DataExtractor(BaseExtractor):
                 'extract_db_keywords': settings.EXTRACT_DB_KEYWORDS,
                 'date_filtering': {
                     'start_date': start_date,
-                    'end_date': settings.EXTRACT_END_DATE,
-                    'days_count': settings.EXTRACT_DAYS_COUNT
+                    'days_count': settings.EXTRACT_DAYS_COUNT,
+                    'hours_count': settings.EXTRACT_HOURS_COUNT
                 }
             }
     
@@ -183,41 +190,73 @@ class DataExtractor(BaseExtractor):
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """
-        Get start and end dates for filtering based on configuration
+        Get start and end dates/times for filtering based on configuration
+        
+        Supports both days and hours for flexible time-based extraction.
         
         Returns:
-            Tuple of (start_date, end_date) in YYYY-MM-DD format or (None, None) if disabled
+            Tuple of (start_datetime, end_datetime) in format (can be date or datetime string)
         """
         date_config = self.config.get('date_filtering', {})
         start_date = (date_config.get('start_date') or '').strip()
-        end_date = (date_config.get('end_date') or '').strip()
         days_count = (date_config.get('days_count') or '').strip()
+        hours_count = (date_config.get('hours_count') or '').strip()
         
         # Clean up inline comments from .env file
         if start_date and '#' in start_date:
             start_date = start_date.split('#')[0].strip()
-        if end_date and '#' in end_date:
-            end_date = end_date.split('#')[0].strip()
         if days_count and '#' in days_count:
             days_count = days_count.split('#')[0].strip()
+        if hours_count and '#' in hours_count:
+            hours_count = hours_count.split('#')[0].strip()
         
-        # If any value is empty after cleanup, disable date filtering
-        if not start_date:
-            self.logger.info("No start_date configured - extracting ALL data without date filtering")
+        # If all three are empty, extract ALL data without filtering
+        if not start_date and not days_count and not hours_count:
+            self.logger.info("No date configuration - extracting ALL data without date filtering")
             return None, None
         
-        # If days_count is specified, calculate end_date from start_date
-        if start_date and days_count:
-            try:
+        # If start_date is missing but counts are provided, can't filter
+        if not start_date:
+            self.logger.warning("Days/Hours count provided but no start_date - extracting ALL data")
+            return None, None
+        
+        # Convert empty strings to 0 for days and hours (treat empty as 0, not as "extract to now")
+        days_count_int = int(days_count) if days_count else 0
+        hours_count_int = int(hours_count) if hours_count else 0
+        
+        # Calculate end date/time
+        try:
+            # Parse start_date (could be date or datetime)
+            if ' ' in start_date:
+                # Already has time component
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+            else:
+                # Date only, assume 00:00:00
                 start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                # Convert days_count to int if it's a string
-                days_count_int = int(days_count)
-                end_dt = start_dt + timedelta(days=days_count_int)
-                end_date = end_dt.strftime('%Y-%m-%d')
-                self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days)")
-            except (ValueError, TypeError) as e:
-                self.logger.warning(f"Invalid date configuration: start_date={start_date}, days_count={days_count}. Disabling date filtering.")
-                return None, None
+            
+            # If both days and hours are 0, extract from start_date to current date 6 PM
+            if days_count_int == 0 and hours_count_int == 0:
+                now = datetime.now()
+                end_dt = now.replace(hour=18, minute=0, second=0)
+                end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+                self.logger.info(f"Date filtering enabled: {start_date} to current date 6 PM ({end_date})")
+            else:
+                # Calculate total delta (combine days and hours)
+                total_delta = timedelta(days=days_count_int, hours=hours_count_int)
+                end_dt = start_dt + total_delta
+                end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Log appropriately
+                if days_count_int > 0 and hours_count_int > 0:
+                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days + {hours_count_int} hours)")
+                elif hours_count_int > 0:
+                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({hours_count_int} hours)")
+                elif days_count_int > 0:
+                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days)")
+                
+        except (ValueError, TypeError) as e:
+            self.logger.warning(f"Invalid date configuration: start_date={start_date}. Disabling date filtering.")
+            return None, None
         
         return start_date, end_date
     
@@ -302,37 +341,71 @@ class DataExtractor(BaseExtractor):
         
         if start_date:
             if is_epoch_column:
-                # Convert date to epoch at 6:00 PM (18:00)
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                start_dt = start_dt.replace(hour=18, minute=0, second=0)  # 6:00 PM
-                start_epoch = int(start_dt.timestamp() * 1000)  # Convert to milliseconds
-                where_conditions.append(f"{date_column} >= %s")
-                params.append(start_epoch)
-                self.logger.debug(f"Start date {start_date} 18:00 converted to epoch: {start_epoch}")
+                # Convert date/datetime to epoch
+                try:
+                    if ' ' in start_date:
+                        # Has time component
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        # Date only, assume 00:00:00
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                        start_dt = start_dt.replace(hour=0, minute=0, second=0)
+                    
+                    start_epoch = int(start_dt.timestamp() * 1000)  # Convert to milliseconds
+                    where_conditions.append(f"{date_column} >= %s")
+                    params.append(start_epoch)
+                    self.logger.debug(f"Start date {start_date} converted to epoch: {start_epoch}")
+                except ValueError as e:
+                    self.logger.error(f"Invalid start_date format: {start_date}")
+                    return base_query, []
             else:
                 where_conditions.append(f"{date_column} >= %s")
                 params.append(start_date)
         
         if end_date:
             if is_epoch_column:
-                # Convert date to epoch at 6:00 PM (18:00) of the end date
-                end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-                end_dt = end_dt.replace(hour=18, minute=0, second=0)  # 6:00 PM
-                end_epoch = int(end_dt.timestamp() * 1000)  # Convert to milliseconds
-                where_conditions.append(f"{date_column} <= %s")
-                params.append(end_epoch)
-                self.logger.debug(f"End date {end_date} 18:00 converted to epoch: {end_epoch}")
+                # Convert date/datetime to epoch
+                try:
+                    if ' ' in end_date:
+                        # Has time component
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S')
+                    else:
+                        # Date only, assume 23:59:59 for end of day
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                        end_dt = end_dt.replace(hour=23, minute=59, second=59)
+                    
+                    end_epoch = int(end_dt.timestamp() * 1000)  # Convert to milliseconds
+                    where_conditions.append(f"{date_column} <= %s")
+                    params.append(end_epoch)
+                    self.logger.debug(f"End date {end_date} converted to epoch: {end_epoch}")
+                except ValueError as e:
+                    self.logger.error(f"Invalid end_date format: {end_date}")
+                    return base_query, []
             else:
                 where_conditions.append(f"{date_column} <= %s")
                 params.append(end_date)
         
         if where_conditions:
             where_clause = " AND ".join(where_conditions)
-            if "WHERE" in base_query.upper():
-                # Add to existing WHERE clause
+            
+            # Check if query has LIMIT/OFFSET - WHERE must come before them
+            if "LIMIT" in base_query.upper():
+                # Insert WHERE clause before LIMIT
+                parts = base_query.upper().split("LIMIT")
+                select_part = base_query[:len(parts[0])]
+                limit_part = base_query[len(parts[0]):]
+                
+                if "WHERE" in select_part.upper():
+                    # Add to existing WHERE clause
+                    query = select_part.replace("WHERE", f"WHERE {where_clause} AND") + limit_part
+                else:
+                    # Add WHERE clause before LIMIT
+                    query = f"{select_part} WHERE {where_clause} {limit_part}"
+            elif "WHERE" in base_query.upper():
+                # Add to existing WHERE clause (no LIMIT)
                 query = base_query.replace("WHERE", f"WHERE {where_clause} AND")
             else:
-                # Add new WHERE clause
+                # Add new WHERE clause (no LIMIT)
                 query = f"{base_query} WHERE {where_clause}"
         else:
             query = base_query
