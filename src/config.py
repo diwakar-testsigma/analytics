@@ -41,6 +41,7 @@ class Settings:
     # Extraction Configuration
     EXTRACTION_WORKERS: int = int(os.getenv('EXTRACTION_WORKERS'))
     EXTRACTION_BATCH_SIZE: int = int(os.getenv('EXTRACTION_BATCH_SIZE'))
+    EXTRACTION_DB_WORKERS: int = int(os.getenv('EXTRACTION_DB_WORKERS'))
     EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')
     EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
     EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')

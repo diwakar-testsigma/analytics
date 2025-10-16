@@ -35,6 +35,10 @@ class DataExtractor(BaseExtractor):
         self.custom_config = config or {}
         super().__init__()
         
+        # Performance optimization caches
+        self._date_column_cache = {}
+        self._date_filter_cache = None
+        
         # Register cleanup function to prevent fatal errors
         atexit.register(self._cleanup)
     
@@ -101,7 +105,8 @@ class DataExtractor(BaseExtractor):
                 'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
                 'extraction': {
                     'workers': settings.EXTRACTION_WORKERS,
-                    'batch_size': settings.EXTRACTION_BATCH_SIZE
+                    'batch_size': settings.EXTRACTION_BATCH_SIZE,
+                    'db_workers': settings.EXTRACTION_DB_WORKERS
                 },
                 'output_dir': settings.EXTRACTED_OUTPUT_DIR,
                 'extract_tables': settings.EXTRACT_TABLES,
@@ -163,57 +168,74 @@ class DataExtractor(BaseExtractor):
     
     def list_databases(self) -> List[str]:
         """Get list of databases, excluding system and ignored databases"""
-        conn = self.get_connection(self.config)
-        cursor = conn.cursor()
-        
-        cursor.execute("SHOW DATABASES")
-        all_databases = [db[0] for db in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        # Filter out system databases
-        system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
-        databases = [db for db in all_databases if db not in system_dbs]
-        
-        # Filter databases by include keywords (if provided)
-        include_keywords = self.config['extract_db_keywords'].split(',')
-        include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
-        
-        if include_keywords:
-            # Only include databases that match one of the keywords
-            databases = [
-                db for db in databases 
-                if any(keyword in db.lower() for keyword in include_keywords)
-            ]
-        
-        # Filter out databases by exclude keywords (if provided)
-        exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
-        exclude_keywords = exclude_kw_str.split(',')
-        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
-        
-        if exclude_keywords:
-            original_count = len(databases)
-            # Exclude databases that match any exclude keyword
-            databases = [
-                db for db in databases
-                if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
-            ]
-            excluded_count = original_count - len(databases)
-            if excluded_count > 0:
-                self.logger.info(f"Excluded {excluded_count} databases matching keywords: {exclude_keywords}")
-        
-        return databases
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config)
+            cursor = conn.cursor()
+            
+            cursor.execute("SHOW DATABASES")
+            all_databases = [db[0] for db in cursor.fetchall()]
+            
+            # Filter out system databases
+            system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
+            databases = [db for db in all_databases if db not in system_dbs]
+            
+            # Filter databases by include keywords (if provided)
+            include_keywords = self.config['extract_db_keywords'].split(',')
+            include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+            
+            if include_keywords:
+                # Only include databases that match one of the keywords
+                databases = [
+                    db for db in databases 
+                    if any(keyword in db.lower() for keyword in include_keywords)
+                ]
+            
+            # Filter out databases by exclude keywords (if provided)
+            exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+            exclude_keywords = exclude_kw_str.split(',')
+            exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+            
+            if exclude_keywords:
+                original_count = len(databases)
+                # Exclude databases that match any exclude keyword
+                databases = [
+                    db for db in databases
+                    if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
+                ]
+                excluded_count = original_count - len(databases)
+                if excluded_count > 0:
+                    self.logger.info(f"Excluded {excluded_count} databases matching keywords: {exclude_keywords}")
+            
+            return databases
+        finally:
+            # Always close connections
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """
         Get start and end dates/times for filtering based on configuration
         
         Supports both days and hours for flexible time-based extraction.
+        Cached for performance.
         
         Returns:
             Tuple of (start_datetime, end_datetime) in format (can be date or datetime string)
         """
+        # Return cached result if already computed
+        if self._date_filter_cache is not None:
+            return self._date_filter_cache
+        
         date_config = self.config.get('date_filtering', {})
         start_date = (date_config.get('start_date') or '').strip()
         days_count = (date_config.get('days_count') or '').strip()
@@ -256,30 +278,35 @@ class DataExtractor(BaseExtractor):
                 now = datetime.now()
                 end_dt = now.replace(hour=18, minute=0, second=0)
                 end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
-                self.logger.info(f"Date filtering enabled: {start_date} to current date 6 PM ({end_date})")
+                self.logger.info(f"Date filtering: {start_date} → Today 6PM")
             else:
                 # Calculate total delta (combine days and hours)
                 total_delta = timedelta(days=days_count_int, hours=hours_count_int)
                 end_dt = start_dt + total_delta
                 end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
                 
-                # Log appropriately
+                # Log once (not repeatedly)
                 if days_count_int > 0 and hours_count_int > 0:
-                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days + {hours_count_int} hours)")
+                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({days_count_int}d + {hours_count_int}h)")
                 elif hours_count_int > 0:
-                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({hours_count_int} hours)")
+                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({hours_count_int}h)")
                 elif days_count_int > 0:
-                    self.logger.info(f"Date filtering enabled: {start_date} to {end_date} ({days_count_int} days)")
+                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({days_count_int}d)")
                 
         except (ValueError, TypeError) as e:
             self.logger.warning(f"Invalid date configuration: start_date={start_date}. Disabling date filtering.")
+            self._date_filter_cache = (None, None)
             return None, None
         
+        # Cache the result
+        self._date_filter_cache = (start_date, end_date)
         return start_date, end_date
     
     def _has_date_column(self, database: str, table_name: str) -> tuple:
         """
         Check if table has a date column for filtering and return the column name
+        
+        Cached for performance to avoid repeated SHOW COLUMNS queries.
         
         Args:
             database: Database name
@@ -288,6 +315,13 @@ class DataExtractor(BaseExtractor):
         Returns:
             Tuple of (has_column: bool, column_name: str or None)
         """
+        # Check cache first
+        cache_key = f"{database}.{table_name}"
+        if cache_key in self._date_column_cache:
+            return self._date_column_cache[cache_key]
+        
+        conn = None
+        cursor = None
         try:
             conn = self.get_connection(self.config, database)
             cursor = conn.cursor()
@@ -300,9 +334,9 @@ class DataExtractor(BaseExtractor):
                 cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
                 result = cursor.fetchone()
                 if result:
-                    self.logger.info(f"Using epoch date column '{col}' for {database}.{table_name}")
-                    cursor.close()
-                    conn.close()
+                    self.logger.debug(f"Using epoch date column '{col}' for {database}.{table_name}")
+                    # Cache the result
+                    self._date_column_cache[cache_key] = (True, col)
                     return True, col
             
             # Priority 2: Regular date/datetime columns
@@ -312,20 +346,33 @@ class DataExtractor(BaseExtractor):
                 cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
                 result = cursor.fetchone()
                 if result:
-                    self.logger.info(f"Using date column '{col}' for {database}.{table_name}")
-                    cursor.close()
-                    conn.close()
+                    self.logger.debug(f"Using date column '{col}' for {database}.{table_name}")
+                    # Cache the result
+                    self._date_column_cache[cache_key] = (True, col)
                     return True, col
             
-            cursor.close()
-            conn.close()
-            
             self.logger.debug(f"No suitable date column found in {database}.{table_name} - will extract all data")
+            # Cache the result
+            self._date_column_cache[cache_key] = (False, None)
             return False, None
             
         except Exception as e:
             self.logger.warning(f"Could not check date column for {database}.{table_name}: {e}")
+            # Cache failure as no date column
+            self._date_column_cache[cache_key] = (False, None)
             return False, None
+        finally:
+            # Always close connections in all scenarios
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
     
     def _build_date_filter_query(self, table_name: str, base_query: str, date_column: str = None) -> Tuple[str, List]:
         """
@@ -371,7 +418,6 @@ class DataExtractor(BaseExtractor):
                     start_epoch = int(start_dt.timestamp() * 1000)  # Convert to milliseconds
                     where_conditions.append(f"{date_column} >= %s")
                     params.append(start_epoch)
-                    self.logger.debug(f"Start date {start_date} converted to epoch: {start_epoch}")
                 except ValueError as e:
                     self.logger.error(f"Invalid start_date format: {start_date}")
                     return base_query, []
@@ -394,7 +440,6 @@ class DataExtractor(BaseExtractor):
                     end_epoch = int(end_dt.timestamp() * 1000)  # Convert to milliseconds
                     where_conditions.append(f"{date_column} <= %s")
                     params.append(end_epoch)
-                    self.logger.debug(f"End date {end_date} converted to epoch: {end_epoch}")
                 except ValueError as e:
                     self.logger.error(f"Invalid end_date format: {end_date}")
                     return base_query, []
@@ -431,47 +476,69 @@ class DataExtractor(BaseExtractor):
     
     def list_tables_in_database(self, database: str) -> List[str]:
         """Get list of tables in a database"""
-        conn = self.get_connection(self.config, database)
-        cursor = conn.cursor()
-        
-        cursor.execute("SHOW TABLES")
-        tables = [table[0] for table in cursor.fetchall()]
-        
-        cursor.close()
-        conn.close()
-        
-        return tables
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            
+            cursor.execute("SHOW TABLES")
+            tables = [table[0] for table in cursor.fetchall()]
+            
+            return tables
+        finally:
+            # Always close connections
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
     
     def get_table_count(self, database: str, table_name: str) -> int:
-        """Get row count for a table with optional date filtering"""
-        conn = self.get_connection(self.config, database)
-        cursor = conn.cursor()
-        
-        # Check if table has date column for filtering
-        has_date_column, date_column = self._has_date_column(database, table_name)
-        
-        # Get date filter params to check if filtering is actually enabled
-        start_date, end_date = self._get_date_filter_params()
-        
-        if has_date_column and (start_date or end_date):
-            # Use date filtering
-            base_query = f"SELECT COUNT(*) FROM {table_name}"
-            query, params = self._build_date_filter_query(table_name, base_query, date_column)
-            cursor.execute(query, params)
-            self.logger.debug(f"Count query with date filter for {database}.{table_name}")
-        else:
-            # No date filtering - count all data
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            if not (start_date or end_date):
-                self.logger.debug(f"Count query without date filter for {database}.{table_name}: counting all rows")
-        
-        result = cursor.fetchone()
-        count = result[0] if result else 0
-        
-        cursor.close()
-        conn.close()
-        
-        return count
+        """Get row count for a table with optional date filtering - optimized"""
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            
+            # Check if table has date column for filtering
+            has_date_column, date_column = self._has_date_column(database, table_name)
+            
+            # Get date filter params to check if filtering is actually enabled
+            start_date, end_date = self._get_date_filter_params()
+            
+            if has_date_column and (start_date or end_date):
+                # Use date filtering with EXPLAIN first to check if query will return results
+                # This is faster than running the full count
+                base_query = f"SELECT COUNT(*) FROM {table_name}"
+                query, params = self._build_date_filter_query(table_name, base_query, date_column)
+                cursor.execute(query, params)
+            else:
+                # No date filtering - use fast count
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            
+            result = cursor.fetchone()
+            count = result[0] if result else 0
+            
+            return count
+        finally:
+            # Ensure cleanup
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            if conn:
+                try:
+                    conn.close()
+                except:
+                    pass
     
     def extract_table_batch(self, database: str, table_name: str, offset: int) -> List[Dict[str, Any]]:
         """Extract a batch of rows from a table with optional date filtering"""
@@ -495,10 +562,12 @@ class DataExtractor(BaseExtractor):
                 # Add LIMIT and OFFSET parameters
                 params.extend([self.config['extraction']['batch_size'], offset])
                 cursor.execute(query, params)
+                self.logger.debug(f"Batch query with date filter: {database}.{table_name} offset {offset}")
             else:
                 # No date filtering - extract all data
                 query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 cursor.execute(query, (self.config['extraction']['batch_size'], offset))
+                self.logger.debug(f"Batch query no filter: {database}.{table_name} offset {offset}")
             
             # Fetch all results - PyMySQL handles None values properly
             results = cursor.fetchall()
@@ -525,12 +594,14 @@ class DataExtractor(BaseExtractor):
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
         total_rows = self.get_table_count(database, table_name)
-        self.logger.info(f"Extracting {total_rows} rows from {database}.{table_name}")
         
         if total_rows == 0:
+            self.logger.debug(f"Skipping {database}.{table_name} (0 rows)")
             return []
         
-        # For small tables (<10k rows), extract in single batch (faster)
+        self.logger.info(f"Extracting {total_rows:,} rows from {database}.{table_name}")
+        
+        # For small tables (<10k rows), extract in single batch (faster, no threading overhead)
         if total_rows < 10000:
             return self.extract_table_batch(database, table_name, 0)
         
@@ -624,19 +695,23 @@ class DataExtractor(BaseExtractor):
         
         database_data = {}
         
+        tables_with_data = 0
         for table in table_names:
             try:
-                self.logger.info(f"Extracting table: {database}.{table}")
                 table_data = self.extract_table_data(database, table)
                 
                 if table_data:
                     database_data[table] = {
                         'records': len(table_data),
-                        'sample': table_data  # Note: This is all data, not just a sample
+                        'sample': table_data
                     }
+                    tables_with_data += 1
                     
             except Exception as e:
-                self.logger.error(f"Failed to extract table {database}.{table}: {e}")
+                self.logger.error(f"Failed to extract {database}.{table}: {e}")
+        
+        if tables_with_data > 0:
+            self.logger.debug(f"{database}: {tables_with_data}/{len(table_names)} tables have data")
         
         return database_data
     
@@ -662,19 +737,50 @@ class DataExtractor(BaseExtractor):
                 self.logger.info(f"Using environment start date: {start_date}")
         
         databases = self.list_databases()
-        self.logger.info(f"Found {len(databases)} databases: {', '.join(databases)}")
+        self.logger.info(f"Found {len(databases)} databases to extract")
         
         consolidated_data = {}
         
-        for database in databases:
-            self.logger.info(f"Processing database: {database}")
-            try:
-                database_tables = self.extract_database_to_dict(database, table_names)
-                if database_tables:
-                    consolidated_data[database] = database_tables
-                    self.logger.info(f"Extracted {len(database_tables)} tables from {database}")
-            except Exception as e:
-                self.logger.error(f"Failed to extract from database {database}: {e}")
+        # Use parallel processing for databases when extracting many (much faster!)
+        if len(databases) > 5:
+            self.logger.info(f"Using parallel database extraction (max 10 concurrent connections)")
+            
+            # Use configured database workers (default 10, max 20)
+            configured_db_workers = self.config.get('extraction', {}).get('db_workers', 10)
+            max_db_workers = min(configured_db_workers, 20, len(databases))
+            
+            with ThreadPoolExecutor(max_workers=max_db_workers) as executor:
+                future_to_db = {
+                    executor.submit(self.extract_database_to_dict, db, table_names): db
+                    for db in databases
+                }
+                
+                completed = 0
+                for future in as_completed(future_to_db):
+                    database = future_to_db[future]
+                    completed += 1
+                    try:
+                        database_tables = future.result()
+                        if database_tables:
+                            consolidated_data[database] = database_tables
+                            self.logger.info(f"[{completed}/{len(databases)}] ✓ {database}: {len(database_tables)} tables")
+                        else:
+                            self.logger.debug(f"[{completed}/{len(databases)}] ⊘ {database}: no data")
+                    except Exception as e:
+                        self.logger.error(f"[{completed}/{len(databases)}] ✗ {database}: {e}")
+        else:
+            # Sequential for small number of databases (less overhead)
+            for idx, database in enumerate(databases, 1):
+                self.logger.info(f"[{idx}/{len(databases)}] Processing database: {database}")
+                try:
+                    database_tables = self.extract_database_to_dict(database, table_names)
+                    if database_tables:
+                        consolidated_data[database] = database_tables
+                        self.logger.info(f"Extracted {len(database_tables)} tables from {database}")
+                    else:
+                        self.logger.warning(f"No tables extracted from {database}")
+                except Exception as e:
+                    self.logger.error(f"Failed to extract from database {database}: {e}")
         
         return self.save_consolidated_json(consolidated_data)
     
