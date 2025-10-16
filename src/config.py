@@ -43,6 +43,7 @@ class Settings:
     EXTRACTION_BATCH_SIZE: int = int(os.getenv('EXTRACTION_BATCH_SIZE'))
     EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')
     EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
+    EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')
     
     # Date Filtering Configuration (strip inline comments)
     EXTRACT_START_DATE: str = (os.getenv('EXTRACT_START_DATE') or '').split('#')[0].strip()

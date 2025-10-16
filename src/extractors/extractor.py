@@ -107,6 +107,7 @@ class DataExtractor(BaseExtractor):
                 'extract_tables': settings.EXTRACT_TABLES,
                 'log_level': settings.LOG_LEVEL,
                 'extract_db_keywords': settings.EXTRACT_DB_KEYWORDS,
+                'extract_db_exclude_keywords': settings.EXTRACT_DB_EXCLUDE_KEYWORDS,
                 'date_filtering': {
                     'start_date': start_date,
                     'days_count': settings.EXTRACT_DAYS_COUNT,
@@ -185,6 +186,22 @@ class DataExtractor(BaseExtractor):
                 db for db in databases 
                 if any(keyword in db.lower() for keyword in include_keywords)
             ]
+        
+        # Filter out databases by exclude keywords (if provided)
+        exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+        exclude_keywords = exclude_kw_str.split(',')
+        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+        
+        if exclude_keywords:
+            original_count = len(databases)
+            # Exclude databases that match any exclude keyword
+            databases = [
+                db for db in databases
+                if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
+            ]
+            excluded_count = original_count - len(databases)
+            if excluded_count > 0:
+                self.logger.info(f"Excluded {excluded_count} databases matching keywords: {exclude_keywords}")
         
         return databases
     
