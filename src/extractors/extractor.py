@@ -41,6 +41,7 @@ class DataExtractor(BaseExtractor):
         
         # Register cleanup function to prevent fatal errors
         atexit.register(self._cleanup)
+        
     
     def _cleanup(self):
         """Cleanup function to prevent MySQL connector fatal errors"""
@@ -758,16 +759,33 @@ class DataExtractor(BaseExtractor):
         
         # Get configuration
         date_config = self.config.get('date_filtering', {})
-        start_date = date_config.get('start_date')
-        end_date = date_config.get('end_date') if date_config else None
+        
+        # Get date filter parameters and log them clearly
+        start_date, end_date = self._get_date_filter_params()
         
         databases = self.list_databases()
         
-        # Log extraction start info once
-        if start_date:
-            self.logger.info(f"Starting extraction: {start_date} → {end_date} | {len(databases)} databases")
+        # Log extraction start info with clear date range
+        self.logger.info("=" * 60)
+        self.logger.info("📅 EXTRACTION DATE RANGE:")
+        if start_date and end_date:
+            self.logger.info(f"   FROM: {start_date}")
+            self.logger.info(f"   TO:   {end_date}")
+            self.logger.info(f"   MODE: Date range extraction")
+        elif start_date and not end_date:
+            self.logger.info(f"   FROM: {start_date}")
+            self.logger.info(f"   TO:   NOW (current time)")
+            self.logger.info(f"   MODE: Incremental extraction (new data)")
+        elif not start_date and end_date:
+            self.logger.info(f"   FROM: Beginning of time")
+            self.logger.info(f"   TO:   {end_date}")
+            self.logger.info(f"   MODE: Historical extraction (old data)")
         else:
-            self.logger.info(f"Starting full extraction: {len(databases)} databases")
+            self.logger.info("   FROM: Beginning of time")
+            self.logger.info("   TO:   End of time")
+            self.logger.info("   MODE: FULL EXTRACTION (no date filtering)")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Databases to extract: {len(databases)}")
         
         consolidated_data = {}
         db_stats = {}
