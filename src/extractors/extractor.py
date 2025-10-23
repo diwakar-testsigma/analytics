@@ -19,7 +19,6 @@ import atexit
 import gc
 
 from .base import BaseExtractor
-from ..extraction_checkpoint import checkpoint
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
 
 
@@ -81,26 +80,20 @@ class DataExtractor(BaseExtractor):
             }
         else:
             # Load from environment variables
-            # Priority: 1. Override from custom config, 2. Checkpoint, 3. Environment variable
-            start_date = None
+            # Priority: 1. Override from custom config, 2. Environment variable
+            # Initialize date configuration
+            extract_date = None
+            extract_direction = None
             
             # Check if we have an override from custom config
             if self.custom_config and 'extraction_start_date_override' in self.custom_config:
-                start_date = self.custom_config['extraction_start_date_override']
+                extract_date = self.custom_config['extraction_start_date_override']
+                extract_direction = settings.EXTRACT_DIRECTION or ''  # Use config value even for overrides
                 # Logger not available yet, will log after initialization
             else:
-                # Get start date - explicit empty value means NO filtering
-                start_date = settings.EXTRACT_START_DATE
-                # Only use checkpoint if EXTRACT_START_DATE variable doesn't exist in .env at all
-                # Empty string in .env = explicit choice to disable filtering
-                # Use checkpoint only if we got None (variable not in .env)
-                if not start_date and settings.AUTO_UPDATE_START_DATE:
-                    # Check if the .env actually has the variable (even if empty)
-                    import os
-                    if 'EXTRACT_START_DATE' not in os.environ:
-                        # Variable not in .env, use checkpoint
-                        start_date = checkpoint.get_last_extraction_date()
-                    # else: Variable is in .env but empty - respect the empty value
+                # Get extraction date - explicit empty value means NO filtering
+                extract_date = settings.EXTRACT_DATE
+                extract_direction = settings.EXTRACT_DIRECTION
             
             return {
                 'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
@@ -115,7 +108,8 @@ class DataExtractor(BaseExtractor):
                 'extract_db_keywords': settings.EXTRACT_DB_KEYWORDS,
                 'extract_db_exclude_keywords': settings.EXTRACT_DB_EXCLUDE_KEYWORDS,
                 'date_filtering': {
-                    'start_date': start_date,
+                    'extract_date': extract_date,
+                    'extract_direction': extract_direction,
                     'days_count': settings.EXTRACT_DAYS_COUNT,
                     'hours_count': settings.EXTRACT_HOURS_COUNT
                 }
@@ -237,53 +231,99 @@ class DataExtractor(BaseExtractor):
             return self._date_filter_cache
         
         date_config = self.config.get('date_filtering', {})
-        start_date = (date_config.get('start_date') or '').strip()
+        extract_date = (date_config.get('extract_date') or '').strip()
+        extract_direction = (date_config.get('extract_direction') or '').strip().lower()
         days_count = (date_config.get('days_count') or '').strip()
         hours_count = (date_config.get('hours_count') or '').strip()
         
         # Clean up inline comments from .env file
-        if start_date and '#' in start_date:
-            start_date = start_date.split('#')[0].strip()
+        if extract_date and '#' in extract_date:
+            extract_date = extract_date.split('#')[0].strip()
         if days_count and '#' in days_count:
             days_count = days_count.split('#')[0].strip()
         if hours_count and '#' in hours_count:
             hours_count = hours_count.split('#')[0].strip()
         
         # If all three are empty, extract ALL data without filtering
-        if not start_date and not days_count and not hours_count:
+        if not extract_date and not days_count and not hours_count:
             return None, None
         
-        # If start_date is missing but counts are provided, can't filter
-        if not start_date:
-            self.logger.warning("Days/Hours count provided but no start_date - extracting ALL data")
-            return None, None
+        # If extract_date is missing but counts are provided, use relative date filtering
+        if not extract_date:
+            # If we have days or hours count, extract data older than (now - days - hours)
+            if days_count or hours_count:
+                days_count_int = int(days_count) if days_count else 0
+                hours_count_int = int(hours_count) if hours_count else 0
+                
+                # Calculate the cutoff datetime
+                cutoff_dt = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # Add days first
+                if days_count_int > 0:
+                    cutoff_dt = cutoff_dt + timedelta(days=days_count_int)
+                
+                # Then add hours
+                if hours_count_int > 0:
+                    cutoff_dt = cutoff_dt + timedelta(hours=hours_count_int)
+                
+                # Return None for start_date and cutoff as end_date
+                # This will create a "less than" filter only
+                self.logger.info(f"Extracting data older than {cutoff_dt.strftime('%Y-%m-%d %H:%M:%S')}")
+                self._date_filter_cache = (None, cutoff_dt.strftime('%Y-%m-%d %H:%M:%S'))
+                return self._date_filter_cache
+            else:
+                # No filtering at all
+                return None, None
         
         # Convert empty strings to 0 for days and hours (treat empty as 0, not as "extract to now")
         days_count_int = int(days_count) if days_count else 0
         hours_count_int = int(hours_count) if hours_count else 0
         
-        # Calculate end date/time
+        # Calculate start and end date/time based on direction
         try:
-            # Parse start_date (could be date or datetime)
-            if ' ' in start_date:
+            # Parse extract_date (could be date or datetime)
+            if ' ' in extract_date:
                 # Already has time component
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+                base_dt = datetime.strptime(extract_date, '%Y-%m-%d %H:%M:%S')
             else:
                 # Date only, assume 00:00:00
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                base_dt = datetime.strptime(extract_date, '%Y-%m-%d')
             
-            # If both days and hours are 0, extract from start_date to NOW
-            if days_count_int == 0 and hours_count_int == 0:
-                end_dt = datetime.now()
-                end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+            # Validate direction - must be explicitly set
+            if not extract_direction:
+                self.logger.error("EXTRACT_DIRECTION not set in configuration")
+                self._date_filter_cache = (None, None)
+                return None, None
+                
+            if extract_direction == 'old':
+                # Extract data OLDER than the specified date
+                if days_count_int == 0 and hours_count_int == 0:
+                    # Extract everything before extract_date
+                    start_date = None
+                    end_date = base_dt.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    # Extract data in range: (extract_date - days/hours) to extract_date
+                    start_dt = base_dt - timedelta(days=days_count_int, hours=hours_count_int)
+                    start_date = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    end_date = base_dt.strftime('%Y-%m-%d %H:%M:%S')
+            elif extract_direction == 'new':
+                # Extract data NEWER than the specified date
+                if days_count_int == 0 and hours_count_int == 0:
+                    # Extract from extract_date to NOW
+                    start_date = base_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    end_date = None  # Will extract to current time
+                else:
+                    # Extract data in range: extract_date to (extract_date + days/hours)
+                    end_dt = base_dt + timedelta(days=days_count_int, hours=hours_count_int)
+                    start_date = base_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
             else:
-                # Calculate total delta (combine days and hours)
-                total_delta = timedelta(days=days_count_int, hours=hours_count_int)
-                end_dt = start_dt + total_delta
-                end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+                self.logger.error(f"Invalid EXTRACT_DIRECTION: {extract_direction}. Must be 'new' or 'old'")
+                self._date_filter_cache = (None, None)
+                return None, None
                 
         except (ValueError, TypeError) as e:
-            self.logger.warning(f"Invalid date configuration: start_date={start_date}. Disabling date filtering.")
+            self.logger.warning(f"Invalid date configuration: extract_date={extract_date}. Disabling date filtering.")
             self._date_filter_cache = (None, None)
             return None, None
         

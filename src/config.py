@@ -47,9 +47,13 @@ class Settings:
     EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')
     
     # Date Filtering Configuration (strip inline comments)
-    EXTRACT_START_DATE: str = (os.getenv('EXTRACT_START_DATE') or '').split('#')[0].strip()
+    EXTRACT_DATE: str = (os.getenv('EXTRACT_DATE') or '').split('#')[0].strip()
+    EXTRACT_DIRECTION: str = (os.getenv('EXTRACT_DIRECTION') or '').split('#')[0].strip()
     EXTRACT_DAYS_COUNT: str = (os.getenv('EXTRACT_DAYS_COUNT') or '').split('#')[0].strip()
     EXTRACT_HOURS_COUNT: str = (os.getenv('EXTRACT_HOURS_COUNT') or '').split('#')[0].strip()
+    
+    # Skip Configuration
+    SKIP_EXTRACTION: bool = (os.getenv('SKIP_EXTRACTION') or '').lower() == 'true'
     
     # Transformation Configuration
     TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS'))
@@ -71,10 +75,6 @@ class Settings:
     
     # Loading Strategy Configuration
     LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY')
-    
-    # Incremental Loading Configuration
-    AUTO_UPDATE_START_DATE: bool = os.getenv('AUTO_UPDATE_START_DATE').lower() == 'true'
-    EXTRACT_CHECKPOINT_FILE: str = os.getenv('EXTRACT_CHECKPOINT_FILE')
     
     # Notification Configuration
     ENABLE_NOTIFICATIONS: bool = os.getenv('ENABLE_NOTIFICATIONS').lower() == 'true'

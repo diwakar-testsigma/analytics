@@ -15,8 +15,8 @@ from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
 from src.transformers.transformer import DataTransformer
 from src.config import settings
-from src.extraction_checkpoint import checkpoint
 from src.notifications import notifier
+from src.utils.env_updater import update_extraction_state, reset_skip_flags
 
 
 class Pipeline:
@@ -102,6 +102,36 @@ class Pipeline:
         Returns:
             Path to consolidated extracted data file
         """
+        # Check if extraction should be skipped
+        if settings.SKIP_EXTRACTION:
+            self.logger.info("=" * 60)
+            self.logger.info("EXTRACTION PHASE SKIPPED (SKIP_EXTRACTION=true)")
+            self.logger.info("=" * 60)
+            
+            # Find the latest extracted file
+            output_dir = Path(self.config.OUTPUT_DIR) / "extracted"
+            extracted_files = list(output_dir.glob("extracted_data_*.json"))
+            
+            if not extracted_files:
+                raise FileNotFoundError("No extracted files found to skip extraction")
+            
+            # Get the most recent file
+            latest_file = max(extracted_files, key=lambda p: p.stat().st_mtime)
+            self.logger.info(f"Using existing extracted file: {latest_file}")
+            
+            # Update metrics
+            with open(latest_file, 'r') as f:
+                data = json.load(f)
+                for db_name, db_data in data.items():
+                    if db_name == 'extraction_metadata':
+                        continue
+                    for table_name, table_info in db_data.items():
+                        if isinstance(table_info, dict) and 'records' in table_info:
+                            self.metrics['extraction']['records_extracted'] += table_info['records']
+                            self.metrics['extraction']['tables_extracted'].append(f"{db_name}.{table_name}")
+            
+            return str(latest_file)
+        
         self.logger.info("=" * 60)
         self.logger.info("EXTRACTION PHASE STARTED")
         self.logger.info("=" * 60)
@@ -164,11 +194,12 @@ class Pipeline:
             self.logger.info(f"Output file: {extracted_file}")
             self.logger.info("=" * 60)
             
-            # Save extraction checkpoint for incremental loading
-            if settings.AUTO_UPDATE_START_DATE:
-                today = datetime.now().strftime('%Y-%m-%d')
-                checkpoint.save_extraction_date(today)
-                self.logger.info(f"💾 Checkpoint saved: Next extraction will start from {today}")
+            # Update extraction state in .env
+            extraction_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            # Keep the current direction from settings
+            current_direction = settings.EXTRACT_DIRECTION or ''
+            update_extraction_state(extraction_timestamp, current_direction, skip_extraction=True)
+            self.logger.info(f"💾 Updated .env: EXTRACT_DATE={extraction_timestamp}, EXTRACT_DIRECTION={current_direction}, SKIP_EXTRACTION=true")
             
             return extracted_file
             
@@ -365,6 +396,11 @@ class Pipeline:
             # Load
             success = self.load(transformed_file)
             self.metrics['success'] = success
+            
+            # If everything succeeded, reset skip flag
+            if success:
+                reset_skip_flags()
+                self.logger.info("✅ Reset SKIP_EXTRACTION=false for next run")
             
             self.metrics['end_time'] = datetime.now()
             self.metrics['duration_seconds'] = (
