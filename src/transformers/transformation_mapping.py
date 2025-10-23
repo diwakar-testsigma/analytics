@@ -30,8 +30,6 @@ IDENTITY_MAPPINGS = {
             "last_name": "users.last_name",
             "email": "users.email",
             "status": "users.status",
-            "authenticity_token": "users.authenticity_token",
-            "password_hash": "users.password",
             "last_logged_in_at": "users.last_logged_in_at",
             "created_at": "users.created_date",
             "updated_at": "users.updated_date",
@@ -53,10 +51,7 @@ IDENTITY_MAPPINGS = {
             "created_by_id": "organizations.created_by_id",
             "updated_by_id": "organizations.updated_by_id",
             "created_at": "organizations.created_date",
-            "updated_at": "organizations.updated_date",
-            "password_expiry_days": "organization_policy.password_expiry_days",
-            "idle_session_timeout": "organization_policy.idle_session_timeout",
-            "max_failed_login_attempts": "organization_policy.max_failed_login_attempts"
+            "updated_at": "organizations.updated_date"
         }
     },
     
@@ -67,25 +62,10 @@ IDENTITY_MAPPINGS = {
             "account_id": "accounts.id",
             "name": "accounts.name",
             "smtp_type": "smtp_configuration.type",
-            "smtp_host": "smtp_configuration.host",
-            "smtp_port": "smtp_configuration.port",
             "auth_module_type": "authentication_modules.type",
             "auth_enabled": "authentication_modules.enabled",
             "created_at": "accounts.created_date",
             "updated_at": "accounts.updated_date"
-        }
-    },
-    
-    "fct_user_sessions": {
-        "source_tables": ["SPRING_SESSION", "SPRING_SESSION_ATTRIBUTES"],
-        "primary_key": "session_id",
-        "column_mappings": {
-            "session_id": "SPRING_SESSION.SESSION_ID",
-            "user_id": "SPRING_SESSION.PRINCIPAL_NAME",
-            "login_time": "SPRING_SESSION.CREATION_TIME",
-            "logout_time": "SPRING_SESSION.EXPIRY_TIME",
-            "last_access_time": "SPRING_SESSION.LAST_ACCESS_TIME",
-            "max_inactive_interval": "SPRING_SESSION.MAX_INACTIVE_INTERVAL"
         }
     }
 }
@@ -103,7 +83,6 @@ MASTER_MAPPINGS = {
             "billing_country": "billing_addresses.country",
             "billing_state": "billing_addresses.state",
             "billing_city": "billing_addresses.city",
-            "billing_address": "billing_addresses.address_line1",
             "billing_zip": "billing_addresses.zip_code",
             "billing_phone": "tenants.phone",
             "billing_email": "tenants.email",
@@ -113,8 +92,6 @@ MASTER_MAPPINGS = {
             "subscription_status": "subscriptions.status_enum",
             "allowed_users": "subscriptions.allowed_users",
             "max_projects": "subscriptions.no_of_projects",
-            "cloud_automated_minutes_per_month": "subscriptions.cloud_automated_minutes_per_month",
-            "local_automated_minutes_per_month": "subscriptions.local_automated_minutes_per_month",
             "total_parallel_runs": "subscriptions.total_parallel_runs",
             "next_renewal_at": "subscriptions.next_renewal_at"
         }

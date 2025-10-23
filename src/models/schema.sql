@@ -1,6 +1,7 @@
 -- Analytics database schema
+-- Synced with transformation_mapping.py
 
--- ===== IDENTITY SCHEMA (4 tables) =====
+-- ===== IDENTITY SCHEMA (3 tables) =====
 
 CREATE TABLE IF NOT EXISTS dim_users (
     user_id INTEGER PRIMARY KEY,
@@ -9,8 +10,6 @@ CREATE TABLE IF NOT EXISTS dim_users (
     last_name VARCHAR(100),
     email VARCHAR(255),
     status VARCHAR(50),
-    authenticity_token VARCHAR(255),
-    password_hash VARCHAR(255),
     last_logged_in_at TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
@@ -30,9 +29,6 @@ CREATE TABLE IF NOT EXISTS dim_organizations (
     updated_by_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    password_expiry_days INTEGER,
-    idle_session_timeout INTEGER,
-    max_failed_login_attempts INTEGER,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -40,22 +36,10 @@ CREATE TABLE IF NOT EXISTS dim_accounts (
     account_id INTEGER PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     smtp_type VARCHAR(100),
-    smtp_host VARCHAR(255),
-    smtp_port INTEGER,
     auth_module_type VARCHAR(100),
     auth_enabled BOOLEAN,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
-
-CREATE TABLE IF NOT EXISTS fct_user_sessions (
-    session_id VARCHAR(255) PRIMARY KEY,
-    user_id VARCHAR(255),
-    login_time TIMESTAMP NOT NULL,
-    logout_time TIMESTAMP,
-    last_access_time TIMESTAMP,
-    max_inactive_interval INTEGER,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
@@ -68,7 +52,6 @@ CREATE TABLE IF NOT EXISTS dim_tenants (
     billing_country VARCHAR(100),
     billing_state VARCHAR(100),
     billing_city VARCHAR(100),
-    billing_address VARCHAR(500),
     billing_zip VARCHAR(20),
     billing_phone VARCHAR(50),
     billing_email VARCHAR(255),
@@ -78,8 +61,6 @@ CREATE TABLE IF NOT EXISTS dim_tenants (
     subscription_status VARCHAR(50),
     allowed_users INTEGER,
     max_projects INTEGER,
-    cloud_automated_minutes_per_month INTEGER,
-    local_automated_minutes_per_month INTEGER,
     total_parallel_runs INTEGER,
     next_renewal_at TIMESTAMP,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
@@ -150,7 +131,7 @@ CREATE TABLE IF NOT EXISTS dim_object_types (
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
--- ===== TENANT SCHEMA (17 tables) =====
+-- ===== TENANT SCHEMA (16 tables) =====
 
 CREATE TABLE IF NOT EXISTS dim_projects (
     project_id INTEGER PRIMARY KEY,
@@ -370,7 +351,7 @@ CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
 );
 
 CREATE TABLE IF NOT EXISTS fct_test_plan_results (
-    test_plan_result_id INTEGER,
+    test_plan_result_id INTEGER PRIMARY KEY,
     test_plan_id INTEGER NOT NULL,
     tenant_id BIGINT NOT NULL,
     user_id INTEGER,
@@ -423,66 +404,24 @@ CREATE TABLE IF NOT EXISTS fct_audit_events (
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
 
--- ETL Monitoring Table
-CREATE TABLE IF NOT EXISTS etl_run_log (
-    run_id INTEGER AUTOINCREMENT PRIMARY KEY,
-    start_time TIMESTAMP NOT NULL,
-    end_time TIMESTAMP,
-    status VARCHAR(50) NOT NULL,
-    records_processed INTEGER DEFAULT 0,
-    records_failed INTEGER DEFAULT 0,
-    error_message TEXT,
-    duration_seconds INTEGER,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
-
 -- ===== CLUSTERING STRATEGY =====
 -- Optimized clustering based on query patterns from all dashboards
--- Clustering reduces data scanning and improves query performance significantly
 
 -- DIMENSION TABLES
--- Users: Heavily queried by account_id and login activity
 ALTER TABLE dim_users CLUSTER BY (account_id, last_logged_in_at);
-
--- Test Cases: Filtered by tenant, creation date, and status
 ALTER TABLE dim_test_cases CLUSTER BY (tenant_id, created_at, status);
-
--- Accounts: Primary key lookups and joins
 ALTER TABLE dim_accounts CLUSTER BY (account_id);
-
--- Tenants: Filtered by subscription status and tenant_id
 ALTER TABLE dim_tenants CLUSTER BY (subscription_status, tenant_id);
-
--- Applications: Filtered by tenant and app_id
 ALTER TABLE dim_applications CLUSTER BY (tenant_id, app_id);
-
--- Test Suites: Tenant-based filtering
 ALTER TABLE dim_test_suites CLUSTER BY (tenant_id, created_at);
 
 -- FACT TABLES
--- Executions: Most queries filter by tenant and time range
 ALTER TABLE fct_executions CLUSTER BY (tenant_id, start_time);
-
--- Test Results: Joined on execution_id and filtered by time
 ALTER TABLE fct_test_results CLUSTER BY (execution_id, start_time);
-
--- Test Steps: Always joined on test_case_id
 ALTER TABLE fct_test_steps CLUSTER BY (test_case_id);
-
--- Test Plan Results: Filtered by tenant and time
 ALTER TABLE fct_test_plan_results CLUSTER BY (tenant_id, created_at);
-
--- Cross Tenant Metrics: Tenant-based aggregations
 ALTER TABLE fct_cross_tenant_metrics CLUSTER BY (tenant_id, created_at);
-
--- Audit Events: Time-series queries by tenant
 ALTER TABLE fct_audit_events CLUSTER BY (tenant_id, timestamp);
-
--- Agent Activity: Filtered by tenant and time
 ALTER TABLE fct_agent_activity CLUSTER BY (tenant_id, start_time);
-
--- API Steps: Filtered by tenant
 ALTER TABLE fct_api_steps CLUSTER BY (tenant_id, created_at);
-
--- Accessibility Results: Tenant and execution based queries
 ALTER TABLE fct_accessibility_results CLUSTER BY (tenant_id, execution_id);

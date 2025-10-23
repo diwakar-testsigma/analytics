@@ -20,6 +20,7 @@ import gc
 
 from .base import BaseExtractor
 from ..extraction_checkpoint import checkpoint
+from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
 
 
 class DataExtractor(BaseExtractor):
@@ -205,8 +206,7 @@ class DataExtractor(BaseExtractor):
                     if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
                 ]
                 excluded_count = original_count - len(databases)
-                if excluded_count > 0:
-                    self.logger.info(f"Excluded {excluded_count} databases matching keywords: {exclude_keywords}")
+                # Excluded databases are not logged to reduce spam
             
             return databases
         finally:
@@ -251,7 +251,6 @@ class DataExtractor(BaseExtractor):
         
         # If all three are empty, extract ALL data without filtering
         if not start_date and not days_count and not hours_count:
-            self.logger.info("No date configuration - extracting ALL data without date filtering")
             return None, None
         
         # If start_date is missing but counts are provided, can't filter
@@ -273,25 +272,15 @@ class DataExtractor(BaseExtractor):
                 # Date only, assume 00:00:00
                 start_dt = datetime.strptime(start_date, '%Y-%m-%d')
             
-            # If both days and hours are 0, extract from start_date to current date 6 PM
+            # If both days and hours are 0, extract from start_date to NOW
             if days_count_int == 0 and hours_count_int == 0:
-                now = datetime.now()
-                end_dt = now.replace(hour=18, minute=0, second=0)
+                end_dt = datetime.now()
                 end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
-                self.logger.info(f"Date filtering: {start_date} → Today 6PM")
             else:
                 # Calculate total delta (combine days and hours)
                 total_delta = timedelta(days=days_count_int, hours=hours_count_int)
                 end_dt = start_dt + total_delta
                 end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
-                
-                # Log once (not repeatedly)
-                if days_count_int > 0 and hours_count_int > 0:
-                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({days_count_int}d + {hours_count_int}h)")
-                elif hours_count_int > 0:
-                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({hours_count_int}h)")
-                elif days_count_int > 0:
-                    self.logger.info(f"Date filtering: {start_date} → {end_date} ({days_count_int}d)")
                 
         except (ValueError, TypeError) as e:
             self.logger.warning(f"Invalid date configuration: start_date={start_date}. Disabling date filtering.")
@@ -328,30 +317,36 @@ class DataExtractor(BaseExtractor):
             
             # Hardcoded priority: Check for epoch columns first, then regular date columns
             # Priority 1: Epoch columns (most accurate for filtering)
-            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch', 'created_at_epoch']
+            # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
+            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
             
             for col in epoch_columns:
                 cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
                 result = cursor.fetchone()
                 if result:
-                    self.logger.debug(f"Using epoch date column '{col}' for {database}.{table_name}")
                     # Cache the result
                     self._date_column_cache[cache_key] = (True, col)
                     return True, col
             
-            # Priority 2: Regular date/datetime columns
+            # Priority 2: created_at_epoch as fallback for static/reference tables
+            cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", ('created_at_epoch',))
+            result = cursor.fetchone()
+            if result:
+                # Cache the result
+                self._date_column_cache[cache_key] = (True, 'created_at_epoch')
+                return True, 'created_at_epoch'
+            
+            # Priority 3: Regular date/datetime columns
             date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
             
             for col in date_columns:
                 cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
                 result = cursor.fetchone()
                 if result:
-                    self.logger.debug(f"Using date column '{col}' for {database}.{table_name}")
                     # Cache the result
                     self._date_column_cache[cache_key] = (True, col)
                     return True, col
             
-            self.logger.debug(f"No suitable date column found in {database}.{table_name} - will extract all data")
             # Cache the result
             self._date_column_cache[cache_key] = (False, None)
             return False, None
@@ -562,12 +557,10 @@ class DataExtractor(BaseExtractor):
                 # Add LIMIT and OFFSET parameters
                 params.extend([self.config['extraction']['batch_size'], offset])
                 cursor.execute(query, params)
-                self.logger.debug(f"Batch query with date filter: {database}.{table_name} offset {offset}")
             else:
                 # No date filtering - extract all data
                 query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 cursor.execute(query, (self.config['extraction']['batch_size'], offset))
-                self.logger.debug(f"Batch query no filter: {database}.{table_name} offset {offset}")
             
             # Fetch all results - PyMySQL handles None values properly
             results = cursor.fetchall()
@@ -593,13 +586,15 @@ class DataExtractor(BaseExtractor):
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
+        # Quick check: Use extraction mapping to determine if table should be extracted
+        # Tables in SKIP_TABLES are not required by transformation mappings
+        if not should_extract_table(table_name):
+            return []
+        
         total_rows = self.get_table_count(database, table_name)
         
         if total_rows == 0:
-            self.logger.debug(f"Skipping {database}.{table_name} (0 rows)")
             return []
-        
-        self.logger.info(f"Extracting {total_rows:,} rows from {database}.{table_name}")
         
         # For small tables (<10k rows), extract in single batch (faster, no threading overhead)
         if total_rows < 10000:
@@ -624,7 +619,6 @@ class DataExtractor(BaseExtractor):
                 try:
                     data = future.result()
                     all_data.extend(data)
-                    self.logger.debug(f"Extracted {len(data)} rows from offset {offset}")
                 except Exception as e:
                     self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
         
@@ -641,8 +635,6 @@ class DataExtractor(BaseExtractor):
         Returns:
             Path to saved JSON file
         """
-        self.logger.info(f"Extracting table: {database}.{table_name}")
-        
         # Extract data
         data = self.extract_table_data(database, table_name)
         
@@ -676,7 +668,6 @@ class DataExtractor(BaseExtractor):
         with open(filepath, 'w') as f:
             json.dump(output_data, f, default=str, indent=2)
         
-        self.logger.info(f"Saved {len(data)} rows to {filepath}")
         return filepath
     
     def extract_database_to_dict(self, database: str, table_names: Optional[List[str]] = None) -> Dict:
@@ -710,9 +701,6 @@ class DataExtractor(BaseExtractor):
             except Exception as e:
                 self.logger.error(f"Failed to extract {database}.{table}: {e}")
         
-        if tables_with_data > 0:
-            self.logger.debug(f"{database}: {tables_with_data}/{len(table_names)} tables have data")
-        
         return database_data
     
     def extract_all_databases(self, table_names: Optional[List[str]] = None) -> str:
@@ -725,29 +713,34 @@ class DataExtractor(BaseExtractor):
         Returns:
             Path to consolidated JSON file
         """
-        # Log extraction start date source
+        from datetime import datetime as dt
+        extraction_start = dt.now()
+        
+        # Get configuration
         date_config = self.config.get('date_filtering', {})
         start_date = date_config.get('start_date')
-        if start_date:
-            if self.custom_config and 'extraction_start_date_override' in self.custom_config:
-                self.logger.info(f"Using override extraction start date: {start_date}")
-            elif checkpoint.get_last_extraction_date() == start_date:
-                self.logger.info(f"Using checkpoint start date: {start_date}")
-            else:
-                self.logger.info(f"Using environment start date: {start_date}")
+        end_date = date_config.get('end_date') if date_config else None
         
         databases = self.list_databases()
-        self.logger.info(f"Found {len(databases)} databases to extract")
+        
+        # Log extraction start info once
+        if start_date:
+            self.logger.info(f"Starting extraction: {start_date} → {end_date} | {len(databases)} databases")
+        else:
+            self.logger.info(f"Starting full extraction: {len(databases)} databases")
         
         consolidated_data = {}
+        db_stats = {}
         
         # Use parallel processing for databases when extracting many (much faster!)
         if len(databases) > 5:
-            self.logger.info(f"Using parallel database extraction (max 10 concurrent connections)")
-            
             # Use configured database workers (default 10, max 20)
             configured_db_workers = self.config.get('extraction', {}).get('db_workers', 10)
             max_db_workers = min(configured_db_workers, 20, len(databases))
+            
+            # Progress tracking (log every 20%)
+            total_dbs = len(databases)
+            last_logged_pct = 0
             
             with ThreadPoolExecutor(max_workers=max_db_workers) as executor:
                 future_to_db = {
@@ -756,31 +749,60 @@ class DataExtractor(BaseExtractor):
                 }
                 
                 completed = 0
+                total_records_so_far = 0
+                
                 for future in as_completed(future_to_db):
                     database = future_to_db[future]
                     completed += 1
+                    
                     try:
                         database_tables = future.result()
                         if database_tables:
                             consolidated_data[database] = database_tables
-                            self.logger.info(f"[{completed}/{len(databases)}] ✓ {database}: {len(database_tables)} tables")
-                        else:
-                            self.logger.debug(f"[{completed}/{len(databases)}] ⊘ {database}: no data")
+                            total_records = sum(t.get('records', 0) for t in database_tables.values())
+                            db_stats[database] = {'tables': len(database_tables), 'records': total_records}
+                            total_records_so_far += total_records
                     except Exception as e:
-                        self.logger.error(f"[{completed}/{len(databases)}] ✗ {database}: {e}")
+                        self.logger.error(f"[{completed}/{total_dbs}] Error in {database}: {e}")
+                    
+                    # Log every 20% or at completion
+                    current_pct = int((completed / total_dbs) * 100)
+                    if current_pct >= last_logged_pct + 20 or completed == total_dbs:
+                        elapsed = (dt.now() - extraction_start).total_seconds()
+                        remaining = (elapsed / completed) * (total_dbs - completed) if completed > 0 else 0
+                        self.logger.info(
+                            f"Progress: {current_pct}% ({completed}/{total_dbs} DBs) | "
+                            f"{total_records_so_far:,} records | "
+                            f"ETA: {remaining:.0f}s"
+                        )
+                        last_logged_pct = current_pct
         else:
             # Sequential for small number of databases (less overhead)
             for idx, database in enumerate(databases, 1):
-                self.logger.info(f"[{idx}/{len(databases)}] Processing database: {database}")
                 try:
                     database_tables = self.extract_database_to_dict(database, table_names)
                     if database_tables:
                         consolidated_data[database] = database_tables
-                        self.logger.info(f"Extracted {len(database_tables)} tables from {database}")
-                    else:
-                        self.logger.warning(f"No tables extracted from {database}")
+                        total_records = sum(t.get('records', 0) for t in database_tables.values())
+                        db_stats[database] = {'tables': len(database_tables), 'records': total_records}
                 except Exception as e:
                     self.logger.error(f"Failed to extract from database {database}: {e}")
+        
+        # Log extraction summary
+        extraction_end = dt.now()
+        duration = (extraction_end - extraction_start).total_seconds()
+        total_tables = sum(s['tables'] for s in db_stats.values())
+        total_records = sum(s['records'] for s in db_stats.values())
+        
+        self.logger.info("=" * 60)
+        self.logger.info("EXTRACTION SUMMARY")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Databases: {len(consolidated_data)}/{len(databases)}")
+        self.logger.info(f"Tables: {total_tables:,}")
+        self.logger.info(f"Records: {total_records:,}")
+        self.logger.info(f"Duration: {duration:.1f}s")
+        self.logger.info(f"Speed: {total_records/duration if duration > 0 else 0:,.0f} records/sec")
+        self.logger.info("=" * 60)
         
         return self.save_consolidated_json(consolidated_data)
     
@@ -811,10 +833,11 @@ class DataExtractor(BaseExtractor):
         
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
+        # Write without indentation for faster I/O (use indent=None for compact JSON)
         with open(filepath, 'w') as f:
-            json.dump(consolidated_data, f, default=str, indent=2)
+            json.dump(consolidated_data, f, default=str)
         
-        self.logger.info(f"Saved consolidated data to {filepath}")
+        self.logger.info(f"Saved to: {filepath}")
         return filepath
     
     def extract(self, table_names: Optional[List[str]] = None, 
