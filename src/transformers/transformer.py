@@ -123,9 +123,11 @@ class DataTransformer:
                         if '.' in source_field:
                             table_name, field_name = source_field.split('.', 1)
                             if table_name == source_table and field_name in record:
-                                transformed_record[target_column] = record[field_name]
+                                value = record[field_name]
+                                transformed_record[target_column] = self._clean_value(value, target_column, target_table)
                         elif source_field in record:
-                            transformed_record[target_column] = record[source_field]
+                            value = record[source_field]
+                            transformed_record[target_column] = self._clean_value(value, target_column, target_table)
                     
                     # Only add record if it has some data
                     if transformed_record:
@@ -139,6 +141,45 @@ class DataTransformer:
                 transformed_data[target_table] = target_records
         
         return transformed_data
+    
+    def _clean_value(self, value: Any, column_name: str, table_name: str) -> Any:
+        """
+        Clean and convert values for Snowflake compatibility
+        
+        Args:
+            value: Raw value from MySQL
+            column_name: Target column name
+            table_name: Target table name
+            
+        Returns:
+            Cleaned value for Snowflake
+        """
+        # Handle MySQL TINYINT(1) boolean conversion
+        if column_name == 'auth_enabled' and table_name == 'dim_accounts':
+            if isinstance(value, bytes):
+                # Convert byte string to boolean
+                return bool(int.from_bytes(value, byteorder='big'))
+            elif value is not None:
+                return bool(value)
+            return None
+        
+        # Handle NULL values for non-nullable columns
+        if column_name == 'tenant_id' and table_name == 'fct_audit_events':
+            if value is None:
+                # Use a default tenant_id of 0 for NULL values
+                self.logger.warning(f"NULL tenant_id found for {table_name}, using default value 0")
+                return 0
+        
+        # Handle other byte string conversions
+        if isinstance(value, bytes):
+            try:
+                # Try to decode as UTF-8 string
+                return value.decode('utf-8')
+            except:
+                # If decoding fails, convert to string representation
+                return str(value)
+        
+        return value
     
     def transform_database_data(self, database: str, database_data: Dict) -> Dict[str, List[Dict]]:
         """
@@ -242,7 +283,8 @@ class DataTransformer:
                         
                         # Get data from the appropriate source table
                         if table_name == main_table and field_name in main_record:
-                            consolidated_record[target_column] = main_record[field_name]
+                            value = main_record[field_name]
+                            consolidated_record[target_column] = self._clean_value(value, target_column, target_table)
                         elif table_name in available_tables:
                             # Find related record in other table
                             related_record = self._find_related_record(
@@ -251,11 +293,13 @@ class DataTransformer:
                                 target_column, source_field
                             )
                             if related_record and field_name in related_record:
-                                consolidated_record[target_column] = related_record[field_name]
+                                value = related_record[field_name]
+                                consolidated_record[target_column] = self._clean_value(value, target_column, target_table)
                     else:
                         # Direct field mapping
                         if source_field in main_record:
-                            consolidated_record[target_column] = main_record[source_field]
+                            value = main_record[source_field]
+                            consolidated_record[target_column] = self._clean_value(value, target_column, target_table)
                 
                 # Only add record if it has meaningful data
                 if consolidated_record and any(v is not None and v != "" for v in consolidated_record.values()):
