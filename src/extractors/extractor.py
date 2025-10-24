@@ -38,6 +38,8 @@ class DataExtractor(BaseExtractor):
         # Performance optimization caches
         self._date_column_cache = {}
         self._date_filter_cache = None
+        self._connection_pool = {}  # Connection pooling for reuse
+        self._table_columns_cache = {}  # Cache all columns per database
         
         # Register cleanup function to prevent fatal errors
         atexit.register(self._cleanup)
@@ -46,6 +48,14 @@ class DataExtractor(BaseExtractor):
     def _cleanup(self):
         """Cleanup function to prevent MySQL connector fatal errors"""
         try:
+            # Close all pooled connections
+            for conn in self._connection_pool.values():
+                try:
+                    conn.close()
+                except:
+                    pass
+            self._connection_pool.clear()
+            
             # Force garbage collection to clean up MySQL connections
             gc.collect()
         except Exception:
@@ -116,8 +126,7 @@ class DataExtractor(BaseExtractor):
                 }
             }
     
-    @staticmethod
-    def get_connection(config: Dict, database: Optional[str] = None):
+    def get_connection(self, config: Dict, database: Optional[str] = None):
         """
         Create MySQL connection using PyMySQL (more stable than mysql-connector)
         
@@ -159,8 +168,23 @@ class DataExtractor(BaseExtractor):
             connection_params['database'] = database
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
-            
-        return pymysql.connect(**connection_params)
+        
+        # Check connection pool first
+        pool_key = f"{parsed.hostname}:{parsed.port}:{database or 'default'}"
+        if pool_key in self._connection_pool:
+            conn = self._connection_pool[pool_key]
+            try:
+                # Test if connection is still alive
+                conn.ping(reconnect=True)
+                return conn
+            except:
+                # Connection is dead, remove from pool
+                del self._connection_pool[pool_key]
+        
+        # Create new connection and add to pool
+        conn = pymysql.connect(**connection_params)
+        self._connection_pool[pool_key] = conn
+        return conn
     
     def list_databases(self) -> List[str]:
         """Get list of databases, excluding system and ignored databases"""
@@ -205,15 +229,10 @@ class DataExtractor(BaseExtractor):
             
             return databases
         finally:
-            # Always close connections
+            # Only close cursor, keep connection in pool
             if cursor:
                 try:
                     cursor.close()
-                except:
-                    pass
-            if conn:
-                try:
-                    conn.close()
                 except:
                     pass
     
@@ -332,6 +351,51 @@ class DataExtractor(BaseExtractor):
         self._date_filter_cache = (start_date, end_date)
         return start_date, end_date
     
+    def _get_all_table_columns(self, database: str) -> Dict[str, List[str]]:
+        """
+        Get all columns for all tables in a database in one query.
+        Cached for performance.
+        
+        Returns:
+            Dict mapping table_name to list of column names
+        """
+        if database in self._table_columns_cache:
+            return self._table_columns_cache[database]
+        
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            
+            # Get all columns for all tables in one query
+            cursor.execute("""
+                SELECT TABLE_NAME, COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = %s
+                ORDER BY TABLE_NAME, ORDINAL_POSITION
+            """, (database,))
+            
+            table_columns = {}
+            for table_name, column_name in cursor.fetchall():
+                if table_name not in table_columns:
+                    table_columns[table_name] = []
+                table_columns[table_name].append(column_name)
+            
+            self._table_columns_cache[database] = table_columns
+            return table_columns
+            
+        except Exception as e:
+            self.logger.warning(f"Could not fetch columns for database {database}: {e}")
+            return {}
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            # Don't close connection - keep in pool
+    
     def _has_date_column(self, database: str, table_name: str) -> tuple:
         """
         Check if table has a date column for filtering and return the column name
@@ -350,65 +414,39 @@ class DataExtractor(BaseExtractor):
         if cache_key in self._date_column_cache:
             return self._date_column_cache[cache_key]
         
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection(self.config, database)
-            cursor = conn.cursor()
-            
-            # Hardcoded priority: Check for epoch columns first, then regular date columns
-            # Priority 1: Epoch columns (most accurate for filtering)
-            # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
-            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
-            
-            for col in epoch_columns:
-                cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
-                result = cursor.fetchone()
-                if result:
-                    # Cache the result
-                    self._date_column_cache[cache_key] = (True, col)
-                    return True, col
-            
-            # Priority 2: created_at_epoch as fallback for static/reference tables
-            cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", ('created_at_epoch',))
-            result = cursor.fetchone()
-            if result:
+        # Get all columns for the database (batch operation)
+        table_columns = self._get_all_table_columns(database)
+        columns = table_columns.get(table_name, [])
+        
+        # Hardcoded priority: Check for epoch columns first, then regular date columns
+        # Priority 1: Epoch columns (most accurate for filtering)
+        # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
+        epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
+        
+        for col in epoch_columns:
+            if col in columns:
                 # Cache the result
-                self._date_column_cache[cache_key] = (True, 'created_at_epoch')
-                return True, 'created_at_epoch'
-            
-            # Priority 3: Regular date/datetime columns
-            date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
-            
-            for col in date_columns:
-                cursor.execute(f"SHOW COLUMNS FROM {table_name} LIKE %s", (col,))
-                result = cursor.fetchone()
-                if result:
-                    # Cache the result
-                    self._date_column_cache[cache_key] = (True, col)
-                    return True, col
-            
+                self._date_column_cache[cache_key] = (True, col)
+                return True, col
+        
+        # Priority 2: created_at_epoch as fallback for static/reference tables
+        if 'created_at_epoch' in columns:
             # Cache the result
-            self._date_column_cache[cache_key] = (False, None)
-            return False, None
-            
-        except Exception as e:
-            self.logger.warning(f"Could not check date column for {database}.{table_name}: {e}")
-            # Cache failure as no date column
-            self._date_column_cache[cache_key] = (False, None)
-            return False, None
-        finally:
-            # Always close connections in all scenarios
-            if cursor:
-                try:
-                    cursor.close()
-                except:
-                    pass
-            if conn:
-                try:
-                    conn.close()
-                except:
-                    pass
+            self._date_column_cache[cache_key] = (True, 'created_at_epoch')
+            return True, 'created_at_epoch'
+        
+        # Priority 3: Regular date/datetime columns
+        date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
+        
+        for col in date_columns:
+            if col in columns:
+                # Cache the result
+                self._date_column_cache[cache_key] = (True, col)
+                return True, col
+        
+        # Cache the result
+        self._date_column_cache[cache_key] = (False, None)
+        return False, None
     
     def _build_date_filter_query(self, table_name: str, base_query: str, date_column: str = None) -> Tuple[str, List]:
         """
@@ -523,15 +561,10 @@ class DataExtractor(BaseExtractor):
             
             return tables
         finally:
-            # Always close connections
+            # Only close cursor, keep connection in pool
             if cursor:
                 try:
                     cursor.close()
-                except:
-                    pass
-            if conn:
-                try:
-                    conn.close()
                 except:
                     pass
     
@@ -550,13 +583,46 @@ class DataExtractor(BaseExtractor):
             start_date, end_date = self._get_date_filter_params()
             
             if has_date_column and (start_date or end_date):
-                # Use date filtering with EXPLAIN first to check if query will return results
-                # This is faster than running the full count
+                # For large tables with date filtering, use approximate count if possible
+                # First try to get table stats from information_schema (very fast)
+                cursor.execute("""
+                    SELECT TABLE_ROWS 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """, (database, table_name))
+                result = cursor.fetchone()
+                approx_count = result[0] if result and result[0] else None
+                
+                # If table is very large (>100k rows), use LIMIT 1 to check if any rows match
+                if approx_count and approx_count > 100000:
+                    base_query = f"SELECT 1 FROM {table_name}"
+                    query, params = self._build_date_filter_query(table_name, base_query, date_column)
+                    query += " LIMIT 1"
+                    cursor.execute(query, params)
+                    has_rows = cursor.fetchone() is not None
+                    
+                    # If no rows match filter, return 0 quickly
+                    if not has_rows:
+                        return 0
+                
+                # For smaller tables or if rows exist, get exact count
                 base_query = f"SELECT COUNT(*) FROM {table_name}"
                 query, params = self._build_date_filter_query(table_name, base_query, date_column)
                 cursor.execute(query, params)
             else:
-                # No date filtering - use fast count
+                # No date filtering - use fast count from information_schema when possible
+                cursor.execute("""
+                    SELECT TABLE_ROWS 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """, (database, table_name))
+                result = cursor.fetchone()
+                
+                # Use approximate count for large tables (>10k rows)
+                if result and result[0] and result[0] > 10000:
+                    return result[0]
+                
+                # Get exact count for small tables
                 cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             
             result = cursor.fetchone()
@@ -564,15 +630,10 @@ class DataExtractor(BaseExtractor):
             
             return count
         finally:
-            # Ensure cleanup
+            # Only close cursor, keep connection in pool
             if cursor:
                 try:
                     cursor.close()
-                except:
-                    pass
-            if conn:
-                try:
-                    conn.close()
                 except:
                     pass
     
@@ -613,17 +674,12 @@ class DataExtractor(BaseExtractor):
             self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
             return []
         finally:
-            # Ensure proper cleanup in all cases
-            try:
-                if cursor is not None:
+            # Only close cursor, keep connection in pool
+            if cursor:
+                try:
                     cursor.close()
-            except:
-                pass
-            try:
-                if conn is not None:
-                    conn.close()
-            except:
-                pass
+                except:
+                    pass
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
@@ -645,8 +701,18 @@ class DataExtractor(BaseExtractor):
         all_data = []
         offsets = list(range(0, total_rows, self.config['extraction']['batch_size']))
         
-        # Limit workers based on table size to avoid overhead
-        optimal_workers = min(self.config['extraction']['workers'], max(1, len(offsets) // 2))
+        # Optimize worker count based on table size and batch count
+        # Too many workers cause connection overhead and contention
+        batch_count = len(offsets)
+        if batch_count <= 2:
+            optimal_workers = 1  # Sequential is faster for 1-2 batches
+        elif batch_count <= 5:
+            optimal_workers = 2  # Light parallelism
+        elif batch_count <= 10:
+            optimal_workers = 3  # Moderate parallelism
+        else:
+            # For many batches, use more workers but cap at 5 to avoid contention
+            optimal_workers = min(5, self.config['extraction']['workers'])
         
         # Use ThreadPoolExecutor for parallel extraction
         with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
@@ -725,10 +791,19 @@ class DataExtractor(BaseExtractor):
         if not table_names:
             table_names = self.list_tables_in_database(database)
         
+        # Pre-fetch all table columns for this database (batch optimization)
+        self._get_all_table_columns(database)
+        
         database_data = {}
         
-        tables_with_data = 0
+        # Filter tables early using extraction mapping
+        tables_to_extract = []
         for table in table_names:
+            if should_extract_table(table):
+                tables_to_extract.append(table)
+        
+        tables_with_data = 0
+        for table in tables_to_extract:
             try:
                 table_data = self.extract_table_data(database, table)
                 
@@ -792,9 +867,15 @@ class DataExtractor(BaseExtractor):
         
         # Use parallel processing for databases when extracting many (much faster!)
         if len(databases) > 5:
-            # Use configured database workers (default 10, max 20)
+            # Optimize database worker count to avoid connection pool exhaustion
+            # Too many concurrent database connections cause contention
             configured_db_workers = self.config.get('extraction', {}).get('db_workers', 10)
-            max_db_workers = min(configured_db_workers, 20, len(databases))
+            if len(databases) <= 10:
+                max_db_workers = min(3, len(databases))  # Light parallelism for few DBs
+            elif len(databases) <= 20:
+                max_db_workers = 5  # Moderate parallelism
+            else:
+                max_db_workers = min(8, configured_db_workers)  # Cap at 8 for many DBs
             
             # Progress tracking (log every 20%)
             total_dbs = len(databases)
@@ -891,9 +972,9 @@ class DataExtractor(BaseExtractor):
         
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        # Write without indentation for faster I/O (use indent=None for compact JSON)
+        # Write without indentation for faster I/O (compact JSON)
         with open(filepath, 'w') as f:
-            json.dump(consolidated_data, f, default=str)
+            json.dump(consolidated_data, f, default=str, separators=(',', ':'))
         
         self.logger.info(f"Saved to: {filepath}")
         return filepath

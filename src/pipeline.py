@@ -194,12 +194,12 @@ class Pipeline:
             self.logger.info(f"Output file: {extracted_file}")
             self.logger.info("=" * 60)
             
-            # Update extraction state in .env
+            # Update extraction state in .env (but don't set skip_extraction yet)
             extraction_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             # Keep the current direction from settings
             current_direction = settings.EXTRACT_DIRECTION or ''
-            update_extraction_state(extraction_timestamp, current_direction, skip_extraction=True)
-            self.logger.info(f"💾 Updated .env: EXTRACT_DATE={extraction_timestamp}, EXTRACT_DIRECTION={current_direction}, SKIP_EXTRACTION=true")
+            update_extraction_state(extraction_timestamp, current_direction, skip_extraction=False)
+            self.logger.info(f"💾 Updated .env: EXTRACT_DATE={extraction_timestamp}, EXTRACT_DIRECTION={current_direction}")
             
             return extracted_file
             
@@ -433,6 +433,14 @@ class Pipeline:
                 self.metrics['extraction']['success'] = False
             if 'transformation' not in self.metrics or not self.metrics['transformation'].get('success'):
                 self.metrics['transformation']['success'] = False
+            
+            # If extraction succeeded but something else failed, set SKIP_EXTRACTION=true
+            if self.metrics.get('extraction', {}).get('success', False):
+                # Extraction succeeded but transformation or loading failed
+                current_direction = settings.EXTRACT_DIRECTION or ''
+                extraction_timestamp = settings.EXTRACT_DATE or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                update_extraction_state(extraction_timestamp, current_direction, skip_extraction=True)
+                self.logger.info("⚠️ Extraction succeeded but pipeline failed - setting SKIP_EXTRACTION=true for retry")
             
             self._save_metrics()
             
