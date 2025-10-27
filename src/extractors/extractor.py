@@ -51,10 +51,11 @@ class DataExtractor(BaseExtractor):
         self._active_connections = []  # Track all active connections for cleanup
         
         # Connection pool settings
-        self._max_connections_per_thread = 5  # Max connections per thread
-        self._connection_timeout = 300  # 5 minutes
+        self._max_connections_per_thread = 2  # Reduced: Max connections per thread
+        self._connection_timeout = 120  # Reduced: 2 minutes
         self._max_retries = 3
         self._retry_delay = 1  # seconds
+        self._global_connection_limit = 20  # Global limit across all threads
         
         # Shutdown handling
         self._shutdown = False
@@ -268,6 +269,20 @@ class DataExtractor(BaseExtractor):
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
         
+        # Check global connection limit before creating new connection
+        with self._connection_lock:
+            if len(self._active_connections) >= self._global_connection_limit:
+                # Try to clean up old connections first
+                self._cleanup_old_connections()
+                
+                # If still over limit, wait and retry
+                if len(self._active_connections) >= self._global_connection_limit:
+                    self.logger.warning(f"Global connection limit reached ({self._global_connection_limit}). Waiting...")
+                    time.sleep(1)
+                    
+                    # Force cleanup of oldest connections
+                    self._force_cleanup_oldest_connections()
+        
         # Try to create connection with retries
         for attempt in range(self._max_retries):
             try:
@@ -301,6 +316,13 @@ class DataExtractor(BaseExtractor):
             try:
                 conn = self._thread_local.connections[pool_key]
                 conn.close()
+                
+                # Also remove from global tracking
+                with self._connection_lock:
+                    self._active_connections = [
+                        c for c in self._active_connections 
+                        if c.get('connection') != conn
+                    ]
             except:
                 pass
             finally:
@@ -324,6 +346,43 @@ class DataExtractor(BaseExtractor):
         # Close and remove old connections
         for pool_key in keys_to_remove:
             self._close_connection(pool_key)
+    
+    def _cleanup_old_connections(self):
+        """Clean up connections older than timeout across all threads"""
+        current_time = time.time()
+        connections_to_remove = []
+        
+        for conn_info in self._active_connections[:]:  # Copy to avoid modification during iteration
+            if current_time - conn_info['created_at'] > self._connection_timeout:
+                connections_to_remove.append(conn_info)
+        
+        for conn_info in connections_to_remove:
+            try:
+                conn = conn_info.get('connection')
+                if conn and hasattr(conn, 'close'):
+                    conn.close()
+                self._active_connections.remove(conn_info)
+            except Exception as e:
+                self.logger.debug(f"Error cleaning up old connection: {e}")
+    
+    def _force_cleanup_oldest_connections(self, count=5):
+        """Force cleanup of oldest connections to free up resources"""
+        if not self._active_connections:
+            return
+        
+        # Sort by creation time and remove oldest
+        sorted_connections = sorted(self._active_connections, key=lambda x: x['created_at'])
+        
+        for i in range(min(count, len(sorted_connections))):
+            conn_info = sorted_connections[i]
+            try:
+                conn = conn_info.get('connection')
+                if conn and hasattr(conn, 'close'):
+                    conn.close()
+                self._active_connections.remove(conn_info)
+                self.logger.info(f"Force closed connection from thread {conn_info['thread_id']}")
+            except Exception as e:
+                self.logger.debug(f"Error force closing connection: {e}")
     
     @contextmanager
     def get_db_connection(self, config: Dict, database: Optional[str] = None):
@@ -440,13 +499,22 @@ class DataExtractor(BaseExtractor):
                         thread_connections[thread_id] = 0
                     thread_connections[thread_id] += 1
                 
-                self.logger.debug(f"Connection pool stats: {active_count} active connections across {thread_count} threads")
+                # Try to get file descriptor count
+                try:
+                    import resource
+                    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                    self.logger.info(f"Connection pool: {active_count} connections, {thread_count} threads | File descriptor limit: {soft}/{hard}")
+                except:
+                    self.logger.info(f"Connection pool: {active_count} connections across {thread_count} threads")
                 
                 # Log per-thread stats if there are issues
-                if active_count > 50:  # Threshold for concern
+                if active_count > 15:  # Lowered threshold
+                    self.logger.warning(f"High connection count: {active_count}")
                     for thread_id, count in thread_connections.items():
-                        if count > 5:
+                        if count > 3:
                             self.logger.warning(f"Thread {thread_id} has {count} connections")
+                    # Force cleanup when high
+                    self._cleanup_old_connections()
         except Exception as e:
             self.logger.debug(f"Error logging connection stats: {e}")
     
@@ -1066,10 +1134,10 @@ class DataExtractor(BaseExtractor):
         elif batch_count <= 5:
             optimal_workers = 2  # Light parallelism
         elif batch_count <= 10:
-            optimal_workers = 3  # Moderate parallelism
+            optimal_workers = 2  # Keep low to avoid file descriptor exhaustion
         else:
-            # For many batches, use more workers but cap at 5 to avoid contention
-            optimal_workers = min(5, self.config['extraction']['workers'])
+            # For many batches, use more workers but cap at 3 to avoid contention
+            optimal_workers = min(3, self.config['extraction']['workers'])
         
         # Use ThreadPoolExecutor for parallel extraction with proper shutdown handling
         executor = ThreadPoolExecutor(max_workers=optimal_workers)
@@ -1258,14 +1326,14 @@ class DataExtractor(BaseExtractor):
         # Use parallel processing for databases when extracting many (much faster!)
         if len(databases) > 5:
             # Optimize database worker count to avoid connection pool exhaustion
-            # Too many concurrent database connections cause contention
+            # Too many concurrent database connections cause contention and file descriptor exhaustion
             configured_db_workers = self.config.get('extraction', {}).get('db_workers', 10)
             if len(databases) <= 10:
-                max_db_workers = min(3, len(databases))  # Light parallelism for few DBs
+                max_db_workers = min(2, len(databases))  # Very light parallelism
             elif len(databases) <= 20:
-                max_db_workers = 5  # Moderate parallelism
+                max_db_workers = 3  # Reduced parallelism
             else:
-                max_db_workers = min(8, configured_db_workers)  # Cap at 8 for many DBs
+                max_db_workers = min(4, configured_db_workers)  # Cap at 4 for many DBs
             
             # Progress tracking (log every 20%)
             total_dbs = len(databases)
