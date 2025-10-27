@@ -19,6 +19,9 @@ import atexit
 import gc
 import signal
 import sys
+import threading
+import time
+from contextlib import contextmanager
 
 from .base import BaseExtractor
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
@@ -40,8 +43,18 @@ class DataExtractor(BaseExtractor):
         # Performance optimization caches
         self._date_column_cache = {}
         self._date_filter_cache = None
-        self._connection_pool = {}  # Connection pooling for reuse
         self._table_columns_cache = {}  # Cache all columns per database
+        
+        # Thread-safe connection management
+        self._thread_local = threading.local()
+        self._connection_lock = threading.Lock()
+        self._active_connections = []  # Track all active connections for cleanup
+        
+        # Connection pool settings
+        self._max_connections_per_thread = 5  # Max connections per thread
+        self._connection_timeout = 300  # 5 minutes
+        self._max_retries = 3
+        self._retry_delay = 1  # seconds
         
         # Shutdown handling
         self._shutdown = False
@@ -80,13 +93,31 @@ class DataExtractor(BaseExtractor):
                 except:
                     pass
             
-            # Close all pooled connections
-            for conn in self._connection_pool.values():
+            # Close all active connections with thread safety
+            with self._connection_lock:
+                for conn_info in self._active_connections[:]:  # Copy list to avoid modification during iteration
+                    try:
+                        conn = conn_info.get('connection')
+                        if conn and hasattr(conn, 'close'):
+                            conn.close()
+                        self._active_connections.remove(conn_info)
+                    except Exception as e:
+                        self.logger.debug(f"Error closing connection: {e}")
+                        pass
+            
+            # Clear thread-local storage
+            if hasattr(self, '_thread_local'):
                 try:
-                    conn.close()
+                    # Try to access thread-local connections if they exist
+                    if hasattr(self._thread_local, 'connections'):
+                        for conn in self._thread_local.connections.values():
+                            try:
+                                conn.close()
+                            except:
+                                pass
+                        self._thread_local.connections.clear()
                 except:
                     pass
-            self._connection_pool.clear()
             
             # Force garbage collection to clean up MySQL connections
             gc.collect()
@@ -164,7 +195,7 @@ class DataExtractor(BaseExtractor):
     
     def get_connection(self, config: Dict, database: Optional[str] = None):
         """
-        Create MySQL connection using PyMySQL (more stable than mysql-connector)
+        Create MySQL connection using thread-safe approach
         
         Args:
             config: Configuration dictionary
@@ -173,6 +204,11 @@ class DataExtractor(BaseExtractor):
         Returns:
             PyMySQL connection object
         """
+        # Initialize thread-local storage if needed
+        if not hasattr(self._thread_local, 'connections'):
+            self._thread_local.connections = {}
+            self._thread_local.last_used = {}
+        
         from urllib.parse import urlparse
         
         # Get connection URL
@@ -188,6 +224,31 @@ class DataExtractor(BaseExtractor):
         # Parse the URL
         parsed = urlparse(connection_url)
         
+        # Create unique key for this connection
+        pool_key = f"{parsed.hostname}:{parsed.port}:{database or 'default'}"
+        
+        # Check thread-local connection pool
+        if pool_key in self._thread_local.connections:
+            conn = self._thread_local.connections[pool_key]
+            last_used = self._thread_local.last_used.get(pool_key, 0)
+            
+            # Check if connection is still valid and not too old
+            if time.time() - last_used < self._connection_timeout:
+                try:
+                    # Test if connection is still alive
+                    conn.ping(reconnect=True)
+                    self._thread_local.last_used[pool_key] = time.time()
+                    return conn
+                except Exception as e:
+                    self.logger.debug(f"Connection ping failed: {e}")
+                    # Connection is dead, remove it
+                    self._close_connection(pool_key)
+        
+        # Clean up old connections in this thread if we have too many
+        if len(self._thread_local.connections) >= self._max_connections_per_thread:
+            self._cleanup_thread_connections()
+        
+        # Create new connection with retry logic
         connection_params = {
             'host': parsed.hostname,
             'port': parsed.port if parsed.port else 3306,
@@ -197,30 +258,197 @@ class DataExtractor(BaseExtractor):
             'autocommit': True,
             'connect_timeout': 30,
             'read_timeout': 300,  # 5 minutes for large queries
+            'write_timeout': 60,  # 1 minute for writes
+            'max_allowed_packet': 1024 * 1024 * 64,  # 64MB
         }
         
-        # Add database if specified in URL or parameter
+        # Add database if specified
         if database:
             connection_params['database'] = database
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
         
-        # Check connection pool first
-        pool_key = f"{parsed.hostname}:{parsed.port}:{database or 'default'}"
-        if pool_key in self._connection_pool:
-            conn = self._connection_pool[pool_key]
+        # Try to create connection with retries
+        for attempt in range(self._max_retries):
             try:
-                # Test if connection is still alive
-                conn.ping(reconnect=True)
+                conn = pymysql.connect(**connection_params)
+                
+                # Store in thread-local pool
+                self._thread_local.connections[pool_key] = conn
+                self._thread_local.last_used[pool_key] = time.time()
+                
+                # Track connection for cleanup
+                with self._connection_lock:
+                    self._active_connections.append({
+                        'connection': conn,
+                        'thread_id': threading.current_thread().ident,
+                        'pool_key': pool_key,
+                        'created_at': time.time()
+                    })
+                
                 return conn
+                
+            except Exception as e:
+                if attempt < self._max_retries - 1:
+                    self.logger.warning(f"Connection attempt {attempt + 1} failed: {e}. Retrying...")
+                    time.sleep(self._retry_delay * (attempt + 1))  # Exponential backoff
+                else:
+                    raise
+    
+    def _close_connection(self, pool_key: str):
+        """Close and remove a connection from thread-local pool"""
+        if hasattr(self._thread_local, 'connections') and pool_key in self._thread_local.connections:
+            try:
+                conn = self._thread_local.connections[pool_key]
+                conn.close()
             except:
-                # Connection is dead, remove from pool
-                del self._connection_pool[pool_key]
+                pass
+            finally:
+                del self._thread_local.connections[pool_key]
+                if pool_key in self._thread_local.last_used:
+                    del self._thread_local.last_used[pool_key]
+    
+    def _cleanup_thread_connections(self):
+        """Clean up old connections in current thread"""
+        if not hasattr(self._thread_local, 'connections'):
+            return
         
-        # Create new connection and add to pool
-        conn = pymysql.connect(**connection_params)
-        self._connection_pool[pool_key] = conn
-        return conn
+        current_time = time.time()
+        keys_to_remove = []
+        
+        # Find connections that are too old
+        for pool_key, last_used in self._thread_local.last_used.items():
+            if current_time - last_used > self._connection_timeout:
+                keys_to_remove.append(pool_key)
+        
+        # Close and remove old connections
+        for pool_key in keys_to_remove:
+            self._close_connection(pool_key)
+    
+    @contextmanager
+    def get_db_connection(self, config: Dict, database: Optional[str] = None):
+        """
+        Context manager for safe database connection handling
+        
+        Usage:
+            with self.get_db_connection(config, database) as conn:
+                cursor = conn.cursor()
+                # ... do work ...
+        
+        Ensures connection is properly handled even if errors occur
+        """
+        conn = None
+        try:
+            conn = self.get_connection(config, database)
+            yield conn
+        except Exception as e:
+            # Log but re-raise the exception
+            self.logger.error(f"Error during database operation: {e}")
+            raise
+        finally:
+            # Don't close the connection here - let thread-local pool manage it
+            # This allows connection reuse within the same thread
+            pass
+    
+    def _execute_query_with_retry(self, config: Dict, database: str, query: str, params=None, 
+                                   use_dict_cursor: bool = False, max_retries: int = None):
+        """
+        Execute a query with automatic retry on connection errors
+        
+        Args:
+            config: Connection configuration
+            database: Database name
+            query: SQL query to execute
+            params: Query parameters
+            use_dict_cursor: Whether to use DictCursor
+            max_retries: Override default max retries
+            
+        Returns:
+            Query results
+        """
+        if max_retries is None:
+            max_retries = self._max_retries
+        
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                conn = self.get_connection(config, database)
+                
+                # Choose cursor type
+                if use_dict_cursor:
+                    cursor = conn.cursor(pymysql.cursors.DictCursor)
+                else:
+                    cursor = conn.cursor()
+                
+                try:
+                    # Execute query
+                    if params:
+                        cursor.execute(query, params)
+                    else:
+                        cursor.execute(query)
+                    
+                    # Fetch results if it's a SELECT query
+                    if query.strip().upper().startswith('SELECT') or query.strip().upper().startswith('SHOW'):
+                        results = cursor.fetchall()
+                        return results
+                    else:
+                        # For non-SELECT queries, return affected rows
+                        return cursor.rowcount
+                        
+                finally:
+                    cursor.close()
+                    
+            except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
+                last_error = e
+                error_code = getattr(e, 'args', [None])[0]
+                
+                # Connection errors that should be retried
+                if error_code in (2003, 2006, 2013):  # Can't connect, MySQL gone away, Lost connection
+                    if attempt < max_retries - 1:
+                        self.logger.warning(f"Connection error on attempt {attempt + 1}: {e}. Retrying...")
+                        # Remove bad connection from pool
+                        pool_key = f"{config.get('host')}:{config.get('port', 3306)}:{database or 'default'}"
+                        self._close_connection(pool_key)
+                        time.sleep(self._retry_delay * (attempt + 1))
+                        continue
+                
+                # Non-retryable errors or last attempt
+                raise
+                
+            except Exception as e:
+                # Non-connection errors, don't retry
+                raise
+        
+        # If we get here, all retries failed
+        if last_error:
+            raise last_error
+        else:
+            raise Exception(f"Query failed after {max_retries} attempts")
+    
+    def _log_connection_stats(self):
+        """Log connection pool statistics for monitoring"""
+        try:
+            with self._connection_lock:
+                active_count = len(self._active_connections)
+                thread_count = len(set(conn['thread_id'] for conn in self._active_connections))
+                
+                # Group by thread
+                thread_connections = {}
+                for conn_info in self._active_connections:
+                    thread_id = conn_info['thread_id']
+                    if thread_id not in thread_connections:
+                        thread_connections[thread_id] = 0
+                    thread_connections[thread_id] += 1
+                
+                self.logger.debug(f"Connection pool stats: {active_count} active connections across {thread_count} threads")
+                
+                # Log per-thread stats if there are issues
+                if active_count > 50:  # Threshold for concern
+                    for thread_id, count in thread_connections.items():
+                        if count > 5:
+                            self.logger.warning(f"Thread {thread_id} has {count} connections")
+        except Exception as e:
+            self.logger.debug(f"Error logging connection stats: {e}")
     
     def _get_connection_for_database(self, database_name: str = None) -> tuple:
         """
@@ -761,14 +989,9 @@ class DataExtractor(BaseExtractor):
     
     def extract_table_batch(self, database: str, table_name: str, offset: int) -> List[Dict[str, Any]]:
         """Extract a batch of rows from a table with optional date filtering"""
-        conn = None
-        cursor = None
         try:
             # Get appropriate connection for this database
             conn_config, _ = self._get_connection_for_database(database)
-            conn = self.get_connection(conn_config, database)
-            # Use DictCursor for table data extraction to get dictionaries
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
             
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)
@@ -776,34 +999,44 @@ class DataExtractor(BaseExtractor):
             # Get date filter params to check if filtering is actually enabled
             start_date, end_date = self._get_date_filter_params()
             
+            # Build query
             if has_date_column and (start_date or end_date):
                 # Use date filtering
                 base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 query, params = self._build_date_filter_query(table_name, base_query, date_column)
                 # Add LIMIT and OFFSET parameters
                 params.extend([self.config['extraction']['batch_size'], offset])
-                cursor.execute(query, params)
             else:
                 # No date filtering - extract all data
                 query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
-                cursor.execute(query, (self.config['extraction']['batch_size'], offset))
+                params = (self.config['extraction']['batch_size'], offset)
             
-            # Fetch all results - PyMySQL handles None values properly
-            results = cursor.fetchall()
+            # Execute query with retry logic
+            results = self._execute_query_with_retry(
+                conn_config, 
+                database, 
+                query, 
+                params, 
+                use_dict_cursor=True,
+                max_retries=3
+            )
             
             # PyMySQL already returns proper dictionaries, no conversion needed
             return results if results else []
             
         except Exception as e:
-            self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
+            # Log the specific error type for debugging
+            error_type = type(e).__name__
+            self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: [{error_type}] {e}")
+            
+            # For packet sequence errors, try to recover by clearing thread connections
+            if "Packet sequence" in str(e):
+                self.logger.warning(f"Packet sequence error detected, clearing thread connections")
+                if hasattr(self._thread_local, 'connections'):
+                    for key in list(self._thread_local.connections.keys()):
+                        self._close_connection(key)
+            
             return []
-        finally:
-            # Only close cursor, keep connection in pool
-            if cursor:
-                try:
-                    cursor.close()
-                except:
-                    pass
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
@@ -1086,6 +1319,9 @@ class DataExtractor(BaseExtractor):
                             f"ETA: {remaining:.0f}s"
                         )
                         last_logged_pct = current_pct
+                        
+                        # Log connection stats periodically
+                        self._log_connection_stats()
             except Exception as e:
                 self.logger.error(f"Error during parallel database extraction: {e}")
             finally:
