@@ -391,7 +391,7 @@ CREATE TABLE IF NOT EXISTS fct_audit_events (
     entity_type VARCHAR(100),
     entity_id INTEGER,
     user_id INTEGER,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     changes_json TEXT,
     ip_address VARCHAR(100),
     timestamp TIMESTAMP,
