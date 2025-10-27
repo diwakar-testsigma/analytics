@@ -49,13 +49,14 @@ class DataExtractor(BaseExtractor):
         self._thread_local = threading.local()
         self._connection_lock = threading.Lock()
         self._active_connections = []  # Track all active connections for cleanup
+        self._connection_in_use = {}  # Track which connections are actively in use
         
-        # Connection pool settings
-        self._max_connections_per_thread = 2  # Reduced: Max connections per thread
-        self._connection_timeout = 120  # Reduced: 2 minutes
+        # Connection pool settings (increased since ulimit is now 65536)
+        self._max_connections_per_thread = 3  # Max connections per thread
+        self._connection_timeout = 300  # 5 minutes
         self._max_retries = 3
         self._retry_delay = 1  # seconds
-        self._global_connection_limit = 20  # Global limit across all threads
+        self._global_connection_limit = 100  # Global limit across all threads
         
         # Shutdown handling
         self._shutdown = False
@@ -268,7 +269,7 @@ class DataExtractor(BaseExtractor):
             connection_params['database'] = database
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
-        
+            
         # Check global connection limit before creating new connection
         with self._connection_lock:
             if len(self._active_connections) >= self._global_connection_limit:
@@ -373,16 +374,33 @@ class DataExtractor(BaseExtractor):
         # Sort by creation time and remove oldest
         sorted_connections = sorted(self._active_connections, key=lambda x: x['created_at'])
         
-        for i in range(min(count, len(sorted_connections))):
-            conn_info = sorted_connections[i]
+        closed_count = 0
+        for conn_info in sorted_connections:
+            if closed_count >= count:
+                break
+                
             try:
                 conn = conn_info.get('connection')
-                if conn and hasattr(conn, 'close'):
+                if not conn:
+                    continue
+                    
+                # Check if connection is in use
+                conn_id = id(conn)
+                if conn_id in self._connection_in_use and self._connection_in_use[conn_id]:
+                    self.logger.debug(f"Skipping in-use connection from thread {conn_info['thread_id']}")
+                    continue
+                
+                # Close the connection
+                if hasattr(conn, 'close'):
                     conn.close()
                 self._active_connections.remove(conn_info)
                 self.logger.info(f"Force closed connection from thread {conn_info['thread_id']}")
+                closed_count += 1
             except Exception as e:
                 self.logger.debug(f"Error force closing connection: {e}")
+        
+        if closed_count < count:
+            self.logger.warning(f"Only closed {closed_count} connections out of requested {count} (others in use)")
     
     @contextmanager
     def get_db_connection(self, config: Dict, database: Optional[str] = None):
@@ -397,14 +415,23 @@ class DataExtractor(BaseExtractor):
         Ensures connection is properly handled even if errors occur
         """
         conn = None
+        conn_id = None
         try:
             conn = self.get_connection(config, database)
+            # Mark connection as in use
+            conn_id = id(conn)
+            with self._connection_lock:
+                self._connection_in_use[conn_id] = True
             yield conn
         except Exception as e:
             # Log but re-raise the exception
             self.logger.error(f"Error during database operation: {e}")
             raise
         finally:
+            # Mark connection as not in use
+            if conn_id:
+                with self._connection_lock:
+                    self._connection_in_use.pop(conn_id, None)
             # Don't close the connection here - let thread-local pool manage it
             # This allows connection reuse within the same thread
             pass
@@ -536,15 +563,21 @@ class DataExtractor(BaseExtractor):
         
         # Database to connection URL mapping for production
         db_lower = database_name.lower()
-        if 'identity' in db_lower or 'kibbutz' in db_lower:
+        
+        # Strict mapping in production:
+        # - identity connection: ONLY 'identity' database
+        # - master connection: ONLY 'master' database  
+        # - tenant connection: ALL 'tenant*' databases
+        
+        if db_lower == 'identity':
             url = self.config.get('identity_mysql_connection_url')
             if url:
                 return {'mysql_connection_url': url}, 'identity'
-        elif 'master' in db_lower or 'nexus' in db_lower:
+        elif db_lower == 'master':
             url = self.config.get('master_mysql_connection_url')
             if url:
                 return {'mysql_connection_url': url}, 'master'
-        elif 'tenant' in db_lower or 'alpha' in db_lower:
+        elif db_lower.startswith('tenant'):
             url = self.config.get('tenant_mysql_connection_url')
             if url:
                 return {'mysql_connection_url': url}, 'tenant'
@@ -581,6 +614,31 @@ class DataExtractor(BaseExtractor):
                     
                     cursor.execute("SHOW DATABASES")
                     databases = [db[0] for db in cursor.fetchall()]
+                    
+                    # Filter databases based on connection group in production
+                    original_dbs = databases[:]
+                    if group == 'identity':
+                        # Only extract 'identity' database from identity connection
+                        databases = [db for db in databases if db.lower() == 'identity']
+                        self.logger.info(f"Identity connection: extracting {databases}")
+                    elif group == 'master':
+                        # Only extract 'master' database from master connection
+                        databases = [db for db in databases if db.lower() == 'master']
+                        self.logger.info(f"Master connection: extracting {databases}")
+                    elif group == 'tenant':
+                        # Extract all tenant databases from tenant connection
+                        databases = [db for db in databases if db.lower().startswith('tenant')]
+                        self.logger.info(f"Tenant connection: extracting {len(databases)} tenant databases")
+                    
+                    # Log skipped databases
+                    skipped_dbs = set(original_dbs) - set(databases)
+                    if skipped_dbs:
+                        # Filter out system databases from skipped list
+                        system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
+                        non_system_skipped = [db for db in skipped_dbs if db not in system_dbs]
+                        if non_system_skipped:
+                            self.logger.warning(f"{group.capitalize()} connection: skipping non-matching databases: {non_system_skipped}")
+                    
                     all_databases.extend(databases)
                     
                 except Exception as e:
@@ -601,52 +659,77 @@ class DataExtractor(BaseExtractor):
             all_databases = list(set(all_databases))
         else:
             # Local environment - use single connection
-            conn = None
-            cursor = None
-            try:
-                conn = self.get_connection(self.config)
-                cursor = conn.cursor()
-                
-                cursor.execute("SHOW DATABASES")
-                all_databases = [db[0] for db in cursor.fetchall()]
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config)
+            cursor = conn.cursor()
+            
+            cursor.execute("SHOW DATABASES")
+            all_databases = [db[0] for db in cursor.fetchall()]
             finally:
                 if cursor:
                     try:
                         cursor.close()
                     except:
                         pass
-        
-        # Filter out system databases
-        system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
-        databases = [db for db in all_databases if db not in system_dbs]
-        
-        # Filter databases by include keywords (if provided)
-        include_keywords = self.config['extract_db_keywords'].split(',')
-        include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
-        
-        if include_keywords:
-            # Only include databases that match one of the keywords
-            databases = [
-                db for db in databases 
-                if any(keyword in db.lower() for keyword in include_keywords)
-            ]
-        
-        # Filter out databases by exclude keywords (if provided)
-        exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
-        exclude_keywords = exclude_kw_str.split(',')
-        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
-        
-        if exclude_keywords:
-            original_count = len(databases)
-            # Exclude databases that match any exclude keyword
-            databases = [
-                db for db in databases
-                if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
-            ]
-            excluded_count = original_count - len(databases)
-            # Excluded databases are not logged to reduce spam
-        
-        return databases
+            
+            # Filter out system databases
+            system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
+            databases = [db for db in all_databases if db not in system_dbs]
+            
+            # Filter databases by include keywords (if provided)
+            include_keywords = self.config['extract_db_keywords'].split(',')
+            include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+            
+            if include_keywords:
+                # In production, this further filters the already-filtered databases
+                original_count = len(databases)
+                databases = [
+                    db for db in databases 
+                    if any(keyword in db.lower() for keyword in include_keywords)
+                ]
+                if self.config.get('environment', 'local').lower() == 'production' and original_count != len(databases):
+                    self.logger.info(f"Keyword filter reduced databases from {original_count} to {len(databases)}")
+            
+            # Filter out databases by exclude keywords (if provided)
+            exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+            exclude_keywords = exclude_kw_str.split(',')
+            exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+            
+            if exclude_keywords:
+                original_count = len(databases)
+                # Exclude databases that match any exclude keyword
+                databases = [
+                    db for db in databases
+                    if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
+                ]
+                excluded_count = original_count - len(databases)
+                # Excluded databases are not logged to reduce spam
+            
+        # Log final database list in production
+        if self.config.get('environment', 'local').lower() == 'production':
+            self.logger.info("=" * 60)
+            self.logger.info("PRODUCTION DATABASE EXTRACTION PLAN:")
+            self.logger.info(f"  - Total databases to extract: {len(databases)}")
+            if databases:
+                # Group by type
+                identity_dbs = [db for db in databases if db.lower() == 'identity']
+                master_dbs = [db for db in databases if db.lower() == 'master']
+                tenant_dbs = [db for db in databases if db.lower().startswith('tenant')]
+                other_dbs = [db for db in databases if db not in identity_dbs + master_dbs + tenant_dbs]
+                
+                if identity_dbs:
+                    self.logger.info(f"  - Identity databases: {identity_dbs}")
+                if master_dbs:
+                    self.logger.info(f"  - Master databases: {master_dbs}")
+                if tenant_dbs:
+                    self.logger.info(f"  - Tenant databases ({len(tenant_dbs)}): {', '.join(sorted(tenant_dbs)[:5])}{'...' if len(tenant_dbs) > 5 else ''}")
+                if other_dbs:
+                    self.logger.info(f"  - Other databases: {other_dbs}")
+            self.logger.info("=" * 60)
+            
+            return databases
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -831,36 +914,36 @@ class DataExtractor(BaseExtractor):
         # Get all columns for the database (batch operation)
         table_columns = self._get_all_table_columns(database)
         columns = table_columns.get(table_name, [])
-        
-        # Hardcoded priority: Check for epoch columns first, then regular date columns
-        # Priority 1: Epoch columns (most accurate for filtering)
-        # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
-        epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
-        
-        for col in epoch_columns:
+            
+            # Hardcoded priority: Check for epoch columns first, then regular date columns
+            # Priority 1: Epoch columns (most accurate for filtering)
+            # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
+            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
+            
+            for col in epoch_columns:
             if col in columns:
-                # Cache the result
-                self._date_column_cache[cache_key] = (True, col)
-                return True, col
-        
-        # Priority 2: created_at_epoch as fallback for static/reference tables
+                    # Cache the result
+                    self._date_column_cache[cache_key] = (True, col)
+                    return True, col
+            
+            # Priority 2: created_at_epoch as fallback for static/reference tables
         if 'created_at_epoch' in columns:
-            # Cache the result
-            self._date_column_cache[cache_key] = (True, 'created_at_epoch')
-            return True, 'created_at_epoch'
-        
-        # Priority 3: Regular date/datetime columns
-        date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
-        
-        for col in date_columns:
-            if col in columns:
                 # Cache the result
-                self._date_column_cache[cache_key] = (True, col)
-                return True, col
-        
-        # Cache the result
-        self._date_column_cache[cache_key] = (False, None)
-        return False, None
+                self._date_column_cache[cache_key] = (True, 'created_at_epoch')
+                return True, 'created_at_epoch'
+            
+            # Priority 3: Regular date/datetime columns
+            date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
+            
+            for col in date_columns:
+            if col in columns:
+                    # Cache the result
+                    self._date_column_cache[cache_key] = (True, col)
+                    return True, col
+            
+            # Cache the result
+            self._date_column_cache[cache_key] = (False, None)
+            return False, None
     
     def _build_date_filter_query(self, table_name: str, base_query: str, date_column: str = None) -> Tuple[str, List]:
         """
@@ -1165,7 +1248,7 @@ class DataExtractor(BaseExtractor):
                 try:
                     data = future.result(timeout=60)  # 1 minute timeout per batch
                     if data:  # Only extend if we got data
-                        all_data.extend(data)
+                    all_data.extend(data)
                 except Exception as e:
                     self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
         except Exception as e:
