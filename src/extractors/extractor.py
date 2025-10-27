@@ -108,6 +108,10 @@ class DataExtractor(BaseExtractor):
             
             return {
                 'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
+                'identity_mysql_connection_url': settings.IDENTITY_MYSQL_CONNECTION_URL,
+                'master_mysql_connection_url': settings.MASTER_MYSQL_CONNECTION_URL,
+                'tenant_mysql_connection_url': settings.TENANT_MYSQL_CONNECTION_URL,
+                'environment': settings.ENVIRONMENT,
                 'extraction': {
                     'workers': settings.EXTRACTION_WORKERS,
                     'batch_size': settings.EXTRACTION_BATCH_SIZE,
@@ -186,55 +190,135 @@ class DataExtractor(BaseExtractor):
         self._connection_pool[pool_key] = conn
         return conn
     
+    def _get_connection_for_database(self, database_name: str = None) -> tuple:
+        """
+        Get appropriate connection URL for a database based on environment
+        
+        Returns:
+            Tuple of (connection_config, database_group)
+        """
+        # For local environment, use single connection URL
+        if self.config.get('environment', 'local').lower() != 'production':
+            return {'mysql_connection_url': self.config['mysql_connection_url']}, 'all'
+        
+        # For production, map databases to their specific connection URLs
+        if not database_name:
+            # Return default for listing all databases
+            return {'mysql_connection_url': self.config['mysql_connection_url']}, 'all'
+        
+        # Database to connection URL mapping for production
+        db_lower = database_name.lower()
+        if 'identity' in db_lower or 'kibbutz' in db_lower:
+            url = self.config.get('identity_mysql_connection_url')
+            if url:
+                return {'mysql_connection_url': url}, 'identity'
+        elif 'master' in db_lower or 'nexus' in db_lower:
+            url = self.config.get('master_mysql_connection_url')
+            if url:
+                return {'mysql_connection_url': url}, 'master'
+        elif 'tenant' in db_lower or 'alpha' in db_lower:
+            url = self.config.get('tenant_mysql_connection_url')
+            if url:
+                return {'mysql_connection_url': url}, 'tenant'
+        
+        # Default to main connection URL
+        return {'mysql_connection_url': self.config['mysql_connection_url']}, 'all'
+    
     def list_databases(self) -> List[str]:
         """Get list of databases, excluding system and ignored databases"""
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection(self.config)
-            cursor = conn.cursor()
+        # For production with separate connections, we need to query each connection
+        if self.config.get('environment', 'local').lower() == 'production':
+            all_databases = []
+            connection_configs = []
             
-            cursor.execute("SHOW DATABASES")
-            all_databases = [db[0] for db in cursor.fetchall()]
+            # Check which production connections are configured
+            if self.config.get('identity_mysql_connection_url'):
+                connection_configs.append(({'mysql_connection_url': self.config['identity_mysql_connection_url']}, 'identity'))
+            if self.config.get('master_mysql_connection_url'):
+                connection_configs.append(({'mysql_connection_url': self.config['master_mysql_connection_url']}, 'master'))
+            if self.config.get('tenant_mysql_connection_url'):
+                connection_configs.append(({'mysql_connection_url': self.config['tenant_mysql_connection_url']}, 'tenant'))
             
-            # Filter out system databases
-            system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
-            databases = [db for db in all_databases if db not in system_dbs]
+            # If no specific connections configured, fall back to main connection
+            if not connection_configs:
+                connection_configs.append(({'mysql_connection_url': self.config['mysql_connection_url']}, 'all'))
             
-            # Filter databases by include keywords (if provided)
-            include_keywords = self.config['extract_db_keywords'].split(',')
-            include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
-            
-            if include_keywords:
-                # Only include databases that match one of the keywords
-                databases = [
-                    db for db in databases 
-                    if any(keyword in db.lower() for keyword in include_keywords)
-                ]
-            
-            # Filter out databases by exclude keywords (if provided)
-            exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
-            exclude_keywords = exclude_kw_str.split(',')
-            exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
-            
-            if exclude_keywords:
-                original_count = len(databases)
-                # Exclude databases that match any exclude keyword
-                databases = [
-                    db for db in databases
-                    if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
-                ]
-                excluded_count = original_count - len(databases)
-                # Excluded databases are not logged to reduce spam
-            
-            return databases
-        finally:
-            # Only close cursor, keep connection in pool
-            if cursor:
+            # Query each connection for its databases
+            for conn_config, group in connection_configs:
+                conn = None
+                cursor = None
                 try:
-                    cursor.close()
-                except:
-                    pass
+                    conn = self.get_connection(conn_config)
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SHOW DATABASES")
+                    databases = [db[0] for db in cursor.fetchall()]
+                    all_databases.extend(databases)
+                    
+                except Exception as e:
+                    self.logger.warning(f"Could not list databases from {group} connection: {e}")
+                finally:
+                    if cursor:
+                        try:
+                            cursor.close()
+                        except:
+                            pass
+                    if conn:
+                        try:
+                            conn.close()
+                        except:
+                            pass
+            
+            # Remove duplicates
+            all_databases = list(set(all_databases))
+        else:
+            # Local environment - use single connection
+            conn = None
+            cursor = None
+            try:
+                conn = self.get_connection(self.config)
+                cursor = conn.cursor()
+                
+                cursor.execute("SHOW DATABASES")
+                all_databases = [db[0] for db in cursor.fetchall()]
+            finally:
+                if cursor:
+                    try:
+                        cursor.close()
+                    except:
+                        pass
+        
+        # Filter out system databases
+        system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
+        databases = [db for db in all_databases if db not in system_dbs]
+        
+        # Filter databases by include keywords (if provided)
+        include_keywords = self.config['extract_db_keywords'].split(',')
+        include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+        
+        if include_keywords:
+            # Only include databases that match one of the keywords
+            databases = [
+                db for db in databases 
+                if any(keyword in db.lower() for keyword in include_keywords)
+            ]
+        
+        # Filter out databases by exclude keywords (if provided)
+        exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+        exclude_keywords = exclude_kw_str.split(',')
+        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+        
+        if exclude_keywords:
+            original_count = len(databases)
+            # Exclude databases that match any exclude keyword
+            databases = [
+                db for db in databases
+                if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
+            ]
+            excluded_count = original_count - len(databases)
+            # Excluded databases are not logged to reduce spam
+        
+        return databases
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -365,7 +449,9 @@ class DataExtractor(BaseExtractor):
         conn = None
         cursor = None
         try:
-            conn = self.get_connection(self.config, database)
+            # Get appropriate connection for this database
+            conn_config, _ = self._get_connection_for_database(database)
+            conn = self.get_connection(conn_config, database)
             cursor = conn.cursor()
             
             # Get all columns for all tables in one query
@@ -553,7 +639,9 @@ class DataExtractor(BaseExtractor):
         conn = None
         cursor = None
         try:
-            conn = self.get_connection(self.config, database)
+            # Get appropriate connection for this database
+            conn_config, _ = self._get_connection_for_database(database)
+            conn = self.get_connection(conn_config, database)
             cursor = conn.cursor()
             
             cursor.execute("SHOW TABLES")
@@ -573,7 +661,9 @@ class DataExtractor(BaseExtractor):
         conn = None
         cursor = None
         try:
-            conn = self.get_connection(self.config, database)
+            # Get appropriate connection for this database
+            conn_config, _ = self._get_connection_for_database(database)
+            conn = self.get_connection(conn_config, database)
             cursor = conn.cursor()
             
             # Check if table has date column for filtering
@@ -642,7 +732,9 @@ class DataExtractor(BaseExtractor):
         conn = None
         cursor = None
         try:
-            conn = self.get_connection(self.config, database)
+            # Get appropriate connection for this database
+            conn_config, _ = self._get_connection_for_database(database)
+            conn = self.get_connection(conn_config, database)
             # Use DictCursor for table data extraction to get dictionaries
             cursor = conn.cursor(pymysql.cursors.DictCursor)
             

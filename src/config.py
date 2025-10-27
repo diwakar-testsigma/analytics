@@ -25,6 +25,11 @@ class Settings:
     SNOWFLAKE_CONNECTION_URL: str = os.getenv('SNOWFLAKE_CONNECTION_URL')
     SQLITE_CONNECTION_URL: str = os.getenv('SQLITE_CONNECTION_URL')
     
+    # Production-specific MySQL Connection URLs (for separate databases)
+    IDENTITY_MYSQL_CONNECTION_URL: str = os.getenv('IDENTITY_MYSQL_CONNECTION_URL')
+    MASTER_MYSQL_CONNECTION_URL: str = os.getenv('MASTER_MYSQL_CONNECTION_URL')
+    TENANT_MYSQL_CONNECTION_URL: str = os.getenv('TENANT_MYSQL_CONNECTION_URL')
+    
     # Data Store Configuration
     DATA_STORE: str = os.getenv('DATA_STORE')
     
