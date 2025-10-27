@@ -21,9 +21,13 @@ class Settings:
     ENVIRONMENT: str = os.getenv('ENVIRONMENT')
     
     # Database Connection URLs
-    MYSQL_CONNECTION_URL: str = os.getenv('MYSQL_CONNECTION_URL')
     SNOWFLAKE_CONNECTION_URL: str = os.getenv('SNOWFLAKE_CONNECTION_URL')
     SQLITE_CONNECTION_URL: str = os.getenv('SQLITE_CONNECTION_URL')
+    
+    # MySQL Connection URLs (for separate databases)
+    IDENTITY_MYSQL_CONNECTION_URL: str = os.getenv('IDENTITY_MYSQL_CONNECTION_URL')
+    MASTER_MYSQL_CONNECTION_URL: str = os.getenv('MASTER_MYSQL_CONNECTION_URL')
+    TENANT_MYSQL_CONNECTION_URL: str = os.getenv('TENANT_MYSQL_CONNECTION_URL')
     
     # Data Store Configuration
     DATA_STORE: str = os.getenv('DATA_STORE')
@@ -45,6 +49,17 @@ class Settings:
     EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')
     EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
     EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')
+    
+    # Connection Pool Configuration (NEW)
+    MAX_CONNECTIONS_PER_THREAD: int = int(os.getenv('MAX_CONNECTIONS_PER_THREAD', '1'))
+    GLOBAL_CONNECTION_LIMIT: int = int(os.getenv('GLOBAL_CONNECTION_LIMIT', '20'))
+    
+    # Query Configuration (NEW)
+    QUERY_TIMEOUT: int = int(os.getenv('QUERY_TIMEOUT', '300'))  # 5 minutes default
+    
+    # Memory Management Configuration (NEW)
+    ENABLE_MEMORY_LIMIT: bool = os.getenv('ENABLE_MEMORY_LIMIT', 'false').lower() == 'true'
+    MAX_MEMORY_PER_TABLE_MB: int = int(os.getenv('MAX_MEMORY_PER_TABLE_MB', '500'))
     
     # Date Filtering Configuration (strip inline comments)
     EXTRACT_DATE: str = (os.getenv('EXTRACT_DATE') or '').split('#')[0].strip()

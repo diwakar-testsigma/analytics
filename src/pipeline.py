@@ -139,7 +139,10 @@ class Pipeline:
         extraction_start = datetime.now()
         
         try:
-            self.logger.info(f"MySQL Connection: {self.config.MYSQL_CONNECTION_URL}")
+            self.logger.info("MySQL Connections:")
+            self.logger.info(f"  - Identity: {self.config.IDENTITY_MYSQL_CONNECTION_URL}")
+            self.logger.info(f"  - Master: {self.config.MASTER_MYSQL_CONNECTION_URL}")
+            self.logger.info(f"  - Tenant: {self.config.TENANT_MYSQL_CONNECTION_URL}")
             self.logger.info(f"DB Keywords Filter: {self.config.EXTRACT_DB_KEYWORDS}")
             
             # Create custom config if we have an override

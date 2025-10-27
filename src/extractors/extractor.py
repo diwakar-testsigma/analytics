@@ -1,37 +1,32 @@
 """
-MySQL Data Extractor
+MySQL Data Extractor - Simplified and Optimized
 
-Extracts data from MySQL databases with support for:
-- Multiple databases extraction
-- Parallel extraction
-- Batch processing
-- Consolidated JSON output
+Extracts data from MySQL databases with:
+- Connection pooling for resource management  
+- Controlled parallelism to prevent connection explosion
+- Automatic shutdown on critical errors
+- Support for multiple databases
 """
 
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import atexit
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pymysql
 import pymysql.cursors
-import atexit
+import logging
 import gc
 
 from .base import BaseExtractor
-from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
-
+from .extraction_mapping import should_extract_table
 
 class DataExtractor(BaseExtractor):
-    """Extracts data from source databases into consolidated JSON format"""
+    """Simplified MySQL data extractor with proper resource management"""
     
     def __init__(self, config: Optional[Dict] = None):
-        """
-        Initialize data extractor
-        
-        Args:
-            config: Optional configuration dictionary. If not provided, uses environment variables
-        """
+        """Initialize extractor with connection pool and processors"""
         self.custom_config = config or {}
         super().__init__()
         
@@ -62,9 +57,8 @@ class DataExtractor(BaseExtractor):
             pass  # Ignore cleanup errors
         
     def _load_config(self) -> Dict:
-        """Load configuration from custom config or environment variables"""
-        # Always load environment settings first
-        from ..config import settings
+        """Load configuration from settings"""
+        from src.config import settings
         
         # Check if we have a full custom config (backward compatibility)
         if self.custom_config and 'output_dir' in self.custom_config:
@@ -107,7 +101,9 @@ class DataExtractor(BaseExtractor):
                 extract_direction = settings.EXTRACT_DIRECTION
             
             return {
-                'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
+                'identity_mysql_connection_url': settings.IDENTITY_MYSQL_CONNECTION_URL,
+                'master_mysql_connection_url': settings.MASTER_MYSQL_CONNECTION_URL,
+                'tenant_mysql_connection_url': settings.TENANT_MYSQL_CONNECTION_URL,
                 'extraction': {
                     'workers': settings.EXTRACTION_WORKERS,
                     'batch_size': settings.EXTRACTION_BATCH_SIZE,
@@ -139,15 +135,22 @@ class DataExtractor(BaseExtractor):
         """
         from urllib.parse import urlparse
         
-        # Get connection URL
-        if 'mysql_connection_url' in config:
-            connection_url = config['mysql_connection_url']
+        # Determine which connection URL to use based on database name
+        if database:
+            if database.lower() == 'identity':
+                connection_url = config.get('identity_mysql_connection_url')
+            elif database.lower() == 'master':
+                connection_url = config.get('master_mysql_connection_url')
+            else:
+                # All other databases are considered tenant databases
+                connection_url = config.get('tenant_mysql_connection_url')
         else:
-            # Fallback for old config format
-            connection_url = config.get('mysql', {}).get('connection_url')
+            # Default to tenant URL when no database is specified
+            # This is used for initial connection to list databases
+            connection_url = config.get('tenant_mysql_connection_url')
         
         if not connection_url:
-            raise ValueError("MySQL connection URL not found in configuration")
+            raise ValueError(f"MySQL connection URL not found for database: {database}")
         
         # Parse the URL
         parsed = urlparse(connection_url)
@@ -187,54 +190,107 @@ class DataExtractor(BaseExtractor):
         return conn
     
     def list_databases(self) -> List[str]:
-        """Get list of databases, excluding system and ignored databases"""
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection(self.config)
-            cursor = conn.cursor()
-            
-            cursor.execute("SHOW DATABASES")
-            all_databases = [db[0] for db in cursor.fetchall()]
-            
-            # Filter out system databases
-            system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
-            databases = [db for db in all_databases if db not in system_dbs]
-            
-            # Filter databases by include keywords (if provided)
-            include_keywords = self.config['extract_db_keywords'].split(',')
-            include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
-            
-            if include_keywords:
-                # Only include databases that match one of the keywords
-                databases = [
-                    db for db in databases 
-                    if any(keyword in db.lower() for keyword in include_keywords)
-                ]
-            
-            # Filter out databases by exclude keywords (if provided)
-            exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
-            exclude_keywords = exclude_kw_str.split(',')
-            exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
-            
-            if exclude_keywords:
-                original_count = len(databases)
-                # Exclude databases that match any exclude keyword
-                databases = [
-                    db for db in databases
-                    if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
-                ]
-                excluded_count = original_count - len(databases)
-                # Excluded databases are not logged to reduce spam
-            
-            return databases
-        finally:
-            # Only close cursor, keep connection in pool
-            if cursor:
-                try:
-                    cursor.close()
-                except:
-                    pass
+        """Get list of databases from all MySQL servers, excluding system and ignored databases"""
+        all_databases = []
+        
+        # Define servers to check with their specific databases
+        servers = [
+            ('identity', 'identity_mysql_connection_url', ['identity']),
+            ('master', 'master_mysql_connection_url', ['master']),
+            ('tenant', 'tenant_mysql_connection_url', None)  # None means get all databases
+        ]
+        
+        for server_name, url_key, specific_dbs in servers:
+            conn = None
+            cursor = None
+            try:
+                # Skip if URL not configured
+                if not self.config.get(url_key):
+                    self.logger.warning(f"No connection URL configured for {server_name} server")
+                    continue
+                
+                # For specific databases, just add them if connection works
+                if specific_dbs:
+                    # Test connection by connecting to the specific database
+                    for db_name in specific_dbs:
+                        try:
+                            test_conn = self.get_connection(self.config, db_name)
+                            # Connection successful, add database
+                            all_databases.append(db_name)
+                            self.logger.info(f"Found {server_name} database: {db_name}")
+                        except Exception as e:
+                            self.logger.warning(f"Could not connect to {db_name} database: {e}")
+                else:
+                    # For tenant server, get all databases dynamically
+                    temp_config = {url_key: self.config[url_key]}
+                    # Create temporary connection to list databases
+                    from urllib.parse import urlparse
+                    parsed = urlparse(self.config[url_key])
+                    
+                    import pymysql
+                    conn = pymysql.connect(
+                        host=parsed.hostname,
+                        port=parsed.port if parsed.port else 3306,
+                        user=parsed.username,
+                        password=parsed.password,
+                        charset='utf8mb4',
+                        autocommit=True,
+                        connect_timeout=30
+                    )
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("SHOW DATABASES")
+                    server_databases = [db[0] for db in cursor.fetchall()]
+                    
+                    # Filter out system databases
+                    system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
+                    server_databases = [db for db in server_databases if db not in system_dbs]
+                    
+                    all_databases.extend(server_databases)
+                    self.logger.info(f"Found {len(server_databases)} databases on {server_name} server")
+                    
+            except Exception as e:
+                self.logger.error(f"Error listing databases from {server_name} server: {e}")
+            finally:
+                if cursor:
+                    try:
+                        cursor.close()
+                    except:
+                        pass
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+        
+        # Remove duplicates while preserving order
+        databases = list(dict.fromkeys(all_databases))
+        
+        # Apply filtering logic
+        # Filter databases by include keywords (if provided)
+        include_keywords = self.config['extract_db_keywords'].split(',')
+        include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+        
+        if include_keywords:
+            # Only include databases that match one of the keywords
+            databases = [
+                db for db in databases 
+                if any(keyword in db.lower() for keyword in include_keywords)
+            ]
+        
+        # Filter out databases by exclude keywords (if provided)
+        exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+        exclude_keywords = exclude_kw_str.split(',')
+        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+        
+        if exclude_keywords:
+            # Exclude databases that match any exclude keyword
+            databases = [
+                db for db in databases
+                if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
+            ]
+        
+        return databases
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """
@@ -982,7 +1038,7 @@ class DataExtractor(BaseExtractor):
     def extract(self, table_names: Optional[List[str]] = None, 
                 databases: Optional[List[str]] = None) -> str:
         """
-        Main extraction method - extracts data to consolidated JSON
+        Main extraction method
         
         Args:
             table_names: Optional list of specific tables to extract
@@ -991,24 +1047,525 @@ class DataExtractor(BaseExtractor):
         Returns:
             Path to consolidated JSON file
         """
-        if databases:
-            # Extract from specific databases
-            consolidated_data = {}
-            for database in databases:
+        start_time = datetime.now()
+        
+        try:
+            # Get databases to extract
+            if not databases:
+                databases = self.list_databases()
+            
+            self.logger.info(f"Starting extraction from {len(databases)} databases")
+            
+            # For very large database counts, process in batches
+            if len(databases) > 50:
+                consolidated_data = self._extract_many_databases(databases, table_names)
+            else:
+                # Normal processing
+                consolidated_data = self._extract_databases(databases, table_names)
+            
+            # Save results
+            result_path = self.save_consolidated_json(consolidated_data)
+            
+            duration = (datetime.now() - start_time).total_seconds()
+            total_records = sum(
+                sum(table.get('records', 0) for table in db_data.values())
+                for db_data in consolidated_data.values() 
+                if isinstance(db_data, dict)
+            )
+            
+            self.logger.info("=" * 60)
+            self.logger.info(f"Extraction completed successfully!")
+            self.logger.info(f"Databases: {len(consolidated_data)}")
+            self.logger.info(f"Total records: {total_records:,}")
+            self.logger.info(f"Duration: {duration:.1f}s")
+            self.logger.info(f"Output: {result_path}")
+            self.logger.info("=" * 60)
+            
+            return result_path
+            
+        except Exception as e:
+            self.logger.error(f"Extraction failed: {e}")
+            # Ensure cleanup on error
+            self.pool.close_all()
+            raise
+    
+    def _extract_databases(self, databases: List[str], 
+                          table_names: Optional[List[str]]) -> Dict:
+        """Extract from multiple databases with controlled parallelism"""
+        results = self.db_processor.process_items(
+            databases,
+            lambda db: self._extract_database_safe(db, table_names),
+            "databases"
+        )
+        
+        return {db: data for db, data in results.items() if data}
+    
+    def _extract_many_databases(self, databases: List[str], 
+                               table_names: Optional[List[str]]) -> Dict:
+        """Extract from many databases in batches to control resources"""
+        consolidated_data = {}
+        batch_size = 20  # Process 20 databases at a time
+        
+        for i in range(0, len(databases), batch_size):
+            batch = databases[i:i + batch_size]
+            batch_num = i // batch_size + 1
+            total_batches = (len(databases) + batch_size - 1) // batch_size
+            
+            self.logger.info(f"Processing database batch {batch_num}/{total_batches}")
+            
+            batch_results = self._extract_databases(batch, table_names)
+            consolidated_data.update(batch_results)
+            
+            # Force garbage collection between batches
+            gc.collect()
+        
+        return consolidated_data
+    
+    def _extract_database_safe(self, database: str, 
+                              table_names: Optional[List[str]]) -> Dict:
+        """Extract database with error handling"""
+        try:
+            return self.extract_database_to_dict(database, table_names)
+        except Exception as e:
+            self.logger.error(f"Failed to extract database {database}: {e}")
+            return {}
+    
+    def extract_database_to_dict(self, database: str, 
+                                table_names: Optional[List[str]] = None) -> Dict:
+        """Extract all tables from a database"""
+        # Get tables to extract
+        if not table_names:
+            table_names = self.list_tables_in_database(database)
+        
+        # Filter tables based on extraction rules
+        tables_to_extract = [t for t in table_names if should_extract_table(t)]
+        
+        if not tables_to_extract:
+            return {}
+        
+        self.logger.info(f"Extracting {len(tables_to_extract)} tables from {database}")
+        
+        database_data = {}
+        
+        # Extract tables sequentially to limit connections per database
+        for table in tables_to_extract:
+            try:
+                data = self.extract_table_data(database, table)
+                if data:
+                    database_data[table] = {
+                        'records': len(data),
+                        'sample': data
+                    }
+            except Exception as e:
+                self.logger.error(f"Failed to extract {database}.{table}: {e}")
+                # Check for critical errors
+                if self._is_critical_error(e):
+                    self.logger.error("Critical error detected, stopping extraction")
+                    raise
+        
+        return database_data
+    
+    def extract_table_data(self, database: str, table_name: str) -> List[Dict]:
+        """Extract all data from a table"""
+        total_rows = self.get_table_count(database, table_name)
+        
+        if total_rows == 0:
+            return []
+        
+        batch_size = self.config['extraction']['batch_size']
+        
+        # For small tables, extract in one batch
+        if total_rows <= batch_size:
+            return self.extract_table_batch(database, table_name, 0)
+        
+        # For large tables, extract in batches
+        all_data = []
+        
+        for offset in range(0, total_rows, batch_size):
+            try:
+                batch = self.extract_table_batch(database, table_name, offset)
+                all_data.extend(batch)
+                
+                # Progress logging for very large tables
+                if total_rows > 100000 and offset > 0 and offset % (batch_size * 10) == 0:
+                    progress = (len(all_data) / total_rows) * 100
+                    self.logger.info(f"{database}.{table_name}: {progress:.1f}% ({len(all_data):,}/{total_rows:,})")
+                    
+            except Exception as e:
+                self.logger.error(f"Error extracting batch at offset {offset}: {e}")
+                if self._is_critical_error(e):
+                    raise
+                # Continue with next batch for non-critical errors
+        
+        return all_data
+    
+    def extract_table_batch(self, database: str, table_name: str, offset: int) -> List[Dict]:
+        """Extract a batch of rows from a table"""
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            # Check if table has date filtering
+            has_date_col, date_col = self._check_date_column(database, table_name)
+            start_date, end_date = self._get_date_filter_params()
+            
+            # Build query
+            if has_date_col and (start_date or end_date):
+                query = self._build_date_filter_query(
+                    table_name, 
+                    f"SELECT * FROM {table_name} LIMIT %s OFFSET %s",
+                    date_col,
+                    start_date,
+                    end_date
+                )
+                params = query[1] + [self.config['extraction']['batch_size'], offset]
+                query = query[0]
+            else:
+                query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
+                params = [self.config['extraction']['batch_size'], offset]
+            
+            cursor.execute(query, params)
+            return cursor.fetchall()
+        except Exception as e:
+            self.logger.error(f"Error extracting batch from {database}.{table_name}: {e}")
+            return []
+        finally:
+            if cursor:
                 try:
-                    database_tables = self.extract_database_to_dict(database, table_names)
-                    if database_tables:
-                        consolidated_data[database] = database_tables
-                except Exception as e:
-                    self.logger.error(f"Failed to extract from database {database}: {e}")
-            return self.save_consolidated_json(consolidated_data)
-        else:
-            # Extract from all databases
-            return self.extract_all_databases(table_names)
-
-
-if __name__ == "__main__":
-    # Example usage
-    extractor = DataExtractor()
-    extracted_file = extractor.extract()
-    print(f"Extraction complete: {extracted_file}")
+                    cursor.close()
+                except:
+                    pass
+    
+    def get_table_count(self, database: str, table_name: str) -> int:
+        """Get row count for a table"""
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            # Check for date filtering
+            has_date_col, date_col = self._check_date_column(database, table_name)
+            start_date, end_date = self._get_date_filter_params()
+            
+            if has_date_col and (start_date or end_date):
+                # Count with date filter
+                query = self._build_date_filter_query(
+                    table_name,
+                    f"SELECT COUNT(*) FROM {table_name}",
+                    date_col,
+                    start_date,
+                    end_date
+                )
+                cursor.execute(query[0], query[1])
+            else:
+                # Try fast approximate count first
+                cursor.execute("""
+                    SELECT TABLE_ROWS 
+                    FROM INFORMATION_SCHEMA.TABLES 
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                """, (database, table_name))
+                
+                result = cursor.fetchone()
+                if result and result[0] is not None and result[0] > 0:
+                    # Add 10% buffer for safety
+                    return int(result[0] * 1.1)
+                
+                # Fallback to exact count
+                cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            
+            return cursor.fetchone()[0] or 0
+        except Exception as e:
+            self.logger.error(f"Error getting count for {database}.{table_name}: {e}")
+            return 0
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+    
+    def list_databases(self) -> List[str]:
+        """List all databases from the three connection URLs"""
+        databases = self._list_databases_from_urls()
+        
+        # Apply filters
+        databases = self._apply_database_filters(databases)
+        
+        self.logger.info(f"Found {len(databases)} databases to extract")
+        return databases
+    
+    def list_tables_in_database(self, database: str) -> List[str]:
+        """List all tables in a database"""
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            cursor.execute("SHOW TABLES")
+            return [row[0] for row in cursor.fetchall()]
+        except Exception as e:
+            self.logger.error(f"Error listing tables in {database}: {e}")
+            return []
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+    
+    def save_consolidated_json(self, consolidated_data: Dict) -> str:
+        """Save consolidated data to JSON file"""
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"extracted_data_{timestamp}.json"
+        filepath = os.path.join(self.config['output_dir'], filename)
+        
+        # Add metadata
+        start_date, end_date = self._get_date_filter_params()
+        consolidated_data['extraction_metadata'] = {
+            'extraction_timestamp': datetime.now().isoformat(),
+            'environment': self.config.get('environment', 'unknown'),
+            'date_filtering': {
+                'enabled': bool(start_date or end_date),
+                'start_date': start_date,
+                'end_date': end_date
+            },
+            'total_databases': len([k for k in consolidated_data.keys() if k != 'extraction_metadata']),
+            'total_tables': sum(
+                len(db_data) for db_data in consolidated_data.values() 
+                if isinstance(db_data, dict)
+            ),
+            'total_records': sum(
+                sum(table.get('records', 0) for table in db_data.values())
+                for db_data in consolidated_data.values() 
+                if isinstance(db_data, dict)
+            )
+        }
+        
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Write compact JSON
+        with open(filepath, 'w') as f:
+            json.dump(consolidated_data, f, default=str, separators=(',', ':'))
+        
+        return filepath
+    
+    # === Helper Methods ===
+    
+    
+    def _list_databases_from_urls(self) -> List[str]:
+        """List databases from the three connection URLs"""
+        all_databases = []
+        
+        # Define connections and their filters
+        connections = [
+            ('identity_mysql_connection_url', 'identity', lambda db: db.lower() == 'identity'),
+            ('master_mysql_connection_url', 'master', lambda db: db.lower() == 'master'),
+            ('tenant_mysql_connection_url', 'tenant', lambda db: db.lower().startswith('tenant'))
+        ]
+        
+        for url_key, group, filter_func in connections:
+            url = self.config.get(url_key)
+            if not url:
+                continue
+            
+            conn = None
+            cursor = None
+            try:
+                # Create a temporary config with the URL
+                temp_config = self.config.copy()
+                temp_config[url_key] = url
+                
+                # Use the first matching database for connection
+                # For identity/master, use their own names; for tenant, use None to get all
+                test_db = group if group in ['identity', 'master'] else None
+                conn = self.get_connection(temp_config, test_db)
+                cursor = conn.cursor()
+                
+                cursor.execute("SHOW DATABASES")
+                databases = [row[0] for row in cursor.fetchall()]
+                
+                # Apply group filter
+                filtered = [db for db in databases if filter_func(db)]
+                all_databases.extend(filtered)
+                
+                self.logger.info(f"{group.capitalize()}: found {len(filtered)} databases")
+                        
+            except Exception as e:
+                self.logger.warning(f"Could not list {group} databases: {e}")
+            finally:
+                if cursor:
+                    try:
+                        cursor.close()
+                    except:
+                        pass
+        
+        return all_databases
+    
+    def _apply_database_filters(self, databases: List[str]) -> List[str]:
+        """Apply include/exclude filters to database list"""
+        # Include filter
+        include_keywords = self.config.get('extract_db_keywords', '').split(',')
+        include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+        
+        if include_keywords:
+            databases = [
+                db for db in databases 
+                if any(kw in db.lower() for kw in include_keywords)
+            ]
+        
+        # Exclude filter
+        exclude_keywords = self.config.get('extract_db_exclude_keywords', '').split(',')
+        exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+        
+        if exclude_keywords:
+            databases = [
+                db for db in databases
+                if not any(kw in db.lower() for kw in exclude_keywords)
+            ]
+        
+        return databases
+    
+    def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
+        """Get date filtering parameters"""
+        date_config = self.config.get('date_filtering', {})
+        extract_date = date_config.get('extract_date', '').strip()
+        extract_direction = date_config.get('extract_direction', '').strip()
+        days_count = date_config.get('days_count', '').strip()
+        hours_count = date_config.get('hours_count', '').strip()
+        
+        if not extract_date:
+            return None, None
+        
+        try:
+            # Parse base date
+            if ' ' in extract_date:
+                base_dt = datetime.strptime(extract_date, '%Y-%m-%d %H:%M:%S')
+            else:
+                base_dt = datetime.strptime(extract_date, '%Y-%m-%d')
+            
+            # Calculate date range
+            days = int(days_count) if days_count else 0
+            hours = int(hours_count) if hours_count else 0
+            
+            if extract_direction == 'old':
+                if days == 0 and hours == 0:
+                    return None, base_dt.strftime('%Y-%m-%d %H:%M:%S')
+                else:
+                    start_dt = base_dt - timedelta(days=days, hours=hours)
+                    return start_dt.strftime('%Y-%m-%d %H:%M:%S'), base_dt.strftime('%Y-%m-%d %H:%M:%S')
+            elif extract_direction == 'new':
+                if days == 0 and hours == 0:
+                    return base_dt.strftime('%Y-%m-%d %H:%M:%S'), None
+                else:
+                    end_dt = base_dt + timedelta(days=days, hours=hours)
+                    return base_dt.strftime('%Y-%m-%d %H:%M:%S'), end_dt.strftime('%Y-%m-%d %H:%M:%S')
+        except:
+            return None, None
+        
+        return None, None
+    
+    def _check_date_column(self, database: str, table_name: str) -> Tuple[bool, Optional[str]]:
+        """Check if table has a date column for filtering"""
+        cache_key = f"{database}.{table_name}"
+        if cache_key in self._date_column_cache:
+            return self._date_column_cache[cache_key]
+        
+        # Get table columns
+        columns = self._get_table_columns(database, table_name)
+        
+        # Check for date columns in priority order
+        date_columns = [
+            'updated_at_epoch', 'updated_epoch', 'modified_at_epoch',
+            'created_at_epoch', 'updated_at', 'modified_at', 
+            'created_at', 'update_time', 'created_date'
+        ]
+        
+        for col in date_columns:
+            if col in columns:
+                self._date_column_cache[cache_key] = (True, col)
+                return True, col
+        
+        self._date_column_cache[cache_key] = (False, None)
+        return False, None
+    
+    def _get_table_columns(self, database: str, table_name: str) -> List[str]:
+        """Get column names for a table"""
+        if database not in self._table_columns_cache:
+            self._table_columns_cache[database] = {}
+        
+        if table_name in self._table_columns_cache[database]:
+            return self._table_columns_cache[database][table_name]
+        
+        conn = None
+        cursor = None
+        try:
+            conn = self.get_connection(self.config, database)
+            cursor = conn.cursor()
+            cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+            columns = [row[0] for row in cursor.fetchall()]
+            self._table_columns_cache[database][table_name] = columns
+            return columns
+        except Exception as e:
+            self.logger.error(f"Error getting columns for {database}.{table_name}: {e}")
+            return []
+        finally:
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+    
+    def _build_date_filter_query(self, table_name: str, base_query: str, 
+                                date_column: str, start_date: Optional[str], 
+                                end_date: Optional[str]) -> Tuple[str, List]:
+        """Build query with date filtering"""
+        conditions = []
+        params = []
+        
+        if start_date:
+            if 'epoch' in date_column:
+                # Convert to epoch milliseconds
+                dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+                conditions.append(f"{date_column} >= %s")
+                params.append(int(dt.timestamp() * 1000))
+            else:
+                conditions.append(f"{date_column} >= %s")
+                params.append(start_date)
+        
+        if end_date:
+            if 'epoch' in date_column:
+                dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S')
+                conditions.append(f"{date_column} <= %s")
+                params.append(int(dt.timestamp() * 1000))
+            else:
+                conditions.append(f"{date_column} <= %s")
+                params.append(end_date)
+        
+        if conditions:
+            where_clause = " AND ".join(conditions)
+            if "WHERE" in base_query.upper():
+                query = base_query.replace("WHERE", f"WHERE {where_clause} AND", 1)
+            else:
+                # Insert WHERE before LIMIT
+                if "LIMIT" in base_query:
+                    parts = base_query.split("LIMIT")
+                    query = f"{parts[0]} WHERE {where_clause} LIMIT{parts[1]}"
+                else:
+                    query = f"{base_query} WHERE {where_clause}"
+            return query, params
+        
+        return base_query, []
+    
+    def _is_critical_error(self, error: Exception) -> bool:
+        """Check if error is critical and should stop extraction"""
+        error_msg = str(error).lower()
+        critical_patterns = [
+            'out of memory',
+            'too many connections',
+            'connection limit',
+            'max_connections',
+            'lost connection',
+            'mysql server has gone away'
+        ]
+        return any(pattern in error_msg for pattern in critical_patterns)
