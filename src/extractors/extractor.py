@@ -17,6 +17,8 @@ import pymysql
 import pymysql.cursors
 import atexit
 import gc
+import signal
+import sys
 
 from .base import BaseExtractor
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
@@ -41,13 +43,43 @@ class DataExtractor(BaseExtractor):
         self._connection_pool = {}  # Connection pooling for reuse
         self._table_columns_cache = {}  # Cache all columns per database
         
+        # Shutdown handling
+        self._shutdown = False
+        self._executors = []  # Track all executors for cleanup
+        
         # Register cleanup function to prevent fatal errors
         atexit.register(self._cleanup)
         
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        
+    
+    def _signal_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        self.logger.info(f"Received signal {signum}, initiating graceful shutdown...")
+        self._shutdown = True
+        self._cleanup()
+        sys.exit(0)
     
     def _cleanup(self):
         """Cleanup function to prevent MySQL connector fatal errors"""
         try:
+            # Set shutdown flag
+            self._shutdown = True
+            
+            # Shutdown all executors first
+            for executor in self._executors:
+                try:
+                    # Try to cancel pending futures
+                    try:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                    except TypeError:
+                        # Fallback for older Python versions
+                        executor.shutdown(wait=False)
+                except:
+                    pass
+            
             # Close all pooled connections
             for conn in self._connection_pool.values():
                 try:
@@ -806,20 +838,48 @@ class DataExtractor(BaseExtractor):
             # For many batches, use more workers but cap at 5 to avoid contention
             optimal_workers = min(5, self.config['extraction']['workers'])
         
-        # Use ThreadPoolExecutor for parallel extraction
-        with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
+        # Use ThreadPoolExecutor for parallel extraction with proper shutdown handling
+        executor = ThreadPoolExecutor(max_workers=optimal_workers)
+        self._executors.append(executor)  # Track for cleanup
+        
+        try:
+            # Check for shutdown before starting
+            if self._shutdown:
+                self.logger.warning("Extraction cancelled due to shutdown")
+                return all_data
+            
             future_to_offset = {
                 executor.submit(self.extract_table_batch, database, table_name, offset): offset 
                 for offset in offsets
             }
             
-            for future in as_completed(future_to_offset):
+            # Process completed futures with timeout
+            for future in as_completed(future_to_offset, timeout=300):  # 5 minute timeout
+                # Check for shutdown
+                if self._shutdown:
+                    self.logger.warning("Extraction interrupted due to shutdown")
+                    break
+                    
                 offset = future_to_offset[future]
                 try:
-                    data = future.result()
-                    all_data.extend(data)
+                    data = future.result(timeout=60)  # 1 minute timeout per batch
+                    if data:  # Only extend if we got data
+                        all_data.extend(data)
                 except Exception as e:
                     self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
+        except Exception as e:
+            self.logger.error(f"Error during parallel extraction: {e}")
+        finally:
+            # Ensure executor is properly shut down
+            try:
+                # Python 3.9+ has cancel_futures parameter
+                executor.shutdown(wait=True, cancel_futures=True)
+            except TypeError:
+                # Fallback for older Python versions
+                executor.shutdown(wait=True)
+            # Remove from tracked executors
+            if executor in self._executors:
+                self._executors.remove(executor)
         
         return all_data
     
@@ -896,6 +956,11 @@ class DataExtractor(BaseExtractor):
         
         tables_with_data = 0
         for table in tables_to_extract:
+            # Check for shutdown
+            if self._shutdown:
+                self.logger.warning(f"Table extraction interrupted due to shutdown at {database}.{table}")
+                break
+                
             try:
                 table_data = self.extract_table_data(database, table)
                 
@@ -973,7 +1038,15 @@ class DataExtractor(BaseExtractor):
             total_dbs = len(databases)
             last_logged_pct = 0
             
-            with ThreadPoolExecutor(max_workers=max_db_workers) as executor:
+            executor = ThreadPoolExecutor(max_workers=max_db_workers)
+            self._executors.append(executor)  # Track for cleanup
+            
+            try:
+                # Check for shutdown before starting
+                if self._shutdown:
+                    self.logger.warning("Database extraction cancelled due to shutdown")
+                    return consolidated_data
+                
                 future_to_db = {
                     executor.submit(self.extract_database_to_dict, db, table_names): db
                     for db in databases
@@ -982,12 +1055,18 @@ class DataExtractor(BaseExtractor):
                 completed = 0
                 total_records_so_far = 0
                 
-                for future in as_completed(future_to_db):
+                # Process with timeout to prevent hanging
+                for future in as_completed(future_to_db, timeout=600):  # 10 minute timeout for all DBs
+                    # Check for shutdown
+                    if self._shutdown:
+                        self.logger.warning("Database extraction interrupted due to shutdown")
+                        break
+                        
                     database = future_to_db[future]
                     completed += 1
                     
                     try:
-                        database_tables = future.result()
+                        database_tables = future.result(timeout=120)  # 2 minute timeout per database
                         if database_tables:
                             consolidated_data[database] = database_tables
                             total_records = sum(t.get('records', 0) for t in database_tables.values())
@@ -1007,6 +1086,19 @@ class DataExtractor(BaseExtractor):
                             f"ETA: {remaining:.0f}s"
                         )
                         last_logged_pct = current_pct
+            except Exception as e:
+                self.logger.error(f"Error during parallel database extraction: {e}")
+            finally:
+                # Ensure executor is properly shut down
+                try:
+                    # Python 3.9+ has cancel_futures parameter
+                    executor.shutdown(wait=True, cancel_futures=True)
+                except TypeError:
+                    # Fallback for older Python versions
+                    executor.shutdown(wait=True)
+                # Remove from tracked executors
+                if executor in self._executors:
+                    self._executors.remove(executor)
         else:
             # Sequential for small number of databases (less overhead)
             for idx, database in enumerate(databases, 1):
