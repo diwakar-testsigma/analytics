@@ -914,36 +914,36 @@ class DataExtractor(BaseExtractor):
         # Get all columns for the database (batch operation)
         table_columns = self._get_all_table_columns(database)
         columns = table_columns.get(table_name, [])
-            
-            # Hardcoded priority: Check for epoch columns first, then regular date columns
-            # Priority 1: Epoch columns (most accurate for filtering)
-            # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
-            epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
-            
-            for col in epoch_columns:
+        
+        # Hardcoded priority: Check for epoch columns first, then regular date columns
+        # Priority 1: Epoch columns (most accurate for filtering)
+        # Note: updated_at_epoch preferred over created_at_epoch for incremental updates
+        epoch_columns = ['updated_at_epoch', 'updated_epoch', 'modified_at_epoch', 'last_updated_epoch']
+        
+        for col in epoch_columns:
             if col in columns:
-                    # Cache the result
-                    self._date_column_cache[cache_key] = (True, col)
-                    return True, col
-            
-            # Priority 2: created_at_epoch as fallback for static/reference tables
-        if 'created_at_epoch' in columns:
                 # Cache the result
-                self._date_column_cache[cache_key] = (True, 'created_at_epoch')
-                return True, 'created_at_epoch'
-            
-            # Priority 3: Regular date/datetime columns
-            date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
-            
-            for col in date_columns:
-            if col in columns:
-                    # Cache the result
-                    self._date_column_cache[cache_key] = (True, col)
-                    return True, col
-            
+                self._date_column_cache[cache_key] = (True, col)
+                return True, col
+        
+        # Priority 2: created_at_epoch as fallback for static/reference tables
+        if 'created_at_epoch' in columns:
             # Cache the result
-            self._date_column_cache[cache_key] = (False, None)
-            return False, None
+            self._date_column_cache[cache_key] = (True, 'created_at_epoch')
+            return True, 'created_at_epoch'
+        
+        # Priority 3: Regular date/datetime columns
+        date_columns = ['updated_at', 'updated_date', 'modified_at', 'modified_date', 'last_updated', 'update_time', 'created_at', 'created_date']
+        
+        for col in date_columns:
+            if col in columns:
+                # Cache the result
+                self._date_column_cache[cache_key] = (True, col)
+                return True, col
+        
+        # Cache the result
+        self._date_column_cache[cache_key] = (False, None)
+        return False, None
     
     def _build_date_filter_query(self, table_name: str, base_query: str, date_column: str = None) -> Tuple[str, List]:
         """
@@ -1248,7 +1248,7 @@ class DataExtractor(BaseExtractor):
                 try:
                     data = future.result(timeout=60)  # 1 minute timeout per batch
                     if data:  # Only extend if we got data
-                    all_data.extend(data)
+                        all_data.extend(data)
                 except Exception as e:
                     self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
         except Exception as e:
