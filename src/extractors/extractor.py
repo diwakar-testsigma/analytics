@@ -659,14 +659,14 @@ class DataExtractor(BaseExtractor):
             all_databases = list(set(all_databases))
         else:
             # Local environment - use single connection
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection(self.config)
-            cursor = conn.cursor()
-            
-            cursor.execute("SHOW DATABASES")
-            all_databases = [db[0] for db in cursor.fetchall()]
+            conn = None
+            cursor = None
+            try:
+                conn = self.get_connection(self.config)
+                cursor = conn.cursor()
+                
+                cursor.execute("SHOW DATABASES")
+                all_databases = [db[0] for db in cursor.fetchall()]
             finally:
                 if cursor:
                     try:
