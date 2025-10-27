@@ -51,6 +51,17 @@ class Settings:
     EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
     EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')
     
+    # Connection Pool Configuration (NEW)
+    MAX_CONNECTIONS_PER_THREAD: int = int(os.getenv('MAX_CONNECTIONS_PER_THREAD', '3'))
+    GLOBAL_CONNECTION_LIMIT: int = int(os.getenv('GLOBAL_CONNECTION_LIMIT', '100'))
+    
+    # Query Configuration (NEW)
+    QUERY_TIMEOUT: int = int(os.getenv('QUERY_TIMEOUT', '300'))  # 5 minutes default
+    
+    # Memory Management Configuration (NEW)
+    ENABLE_MEMORY_LIMIT: bool = os.getenv('ENABLE_MEMORY_LIMIT', 'false').lower() == 'true'
+    MAX_MEMORY_PER_TABLE_MB: int = int(os.getenv('MAX_MEMORY_PER_TABLE_MB', '500'))
+    
     # Date Filtering Configuration (strip inline comments)
     EXTRACT_DATE: str = (os.getenv('EXTRACT_DATE') or '').split('#')[0].strip()
     EXTRACT_DIRECTION: str = (os.getenv('EXTRACT_DIRECTION') or '').split('#')[0].strip()

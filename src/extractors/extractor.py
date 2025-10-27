@@ -51,12 +51,13 @@ class DataExtractor(BaseExtractor):
         self._active_connections = []  # Track all active connections for cleanup
         self._connection_in_use = {}  # Track which connections are actively in use
         
-        # Connection pool settings (increased since ulimit is now 65536)
-        self._max_connections_per_thread = 3  # Max connections per thread
+        # Connection pool settings (from config)
+        from src.config import settings
+        self._max_connections_per_thread = settings.MAX_CONNECTIONS_PER_THREAD
         self._connection_timeout = 300  # 5 minutes
         self._max_retries = 3
         self._retry_delay = 1  # seconds
-        self._global_connection_limit = 100  # Global limit across all threads
+        self._global_connection_limit = settings.GLOBAL_CONNECTION_LIMIT
         
         # Shutdown handling
         self._shutdown = False
