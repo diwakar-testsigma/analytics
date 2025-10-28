@@ -63,6 +63,13 @@ class Settings:
     SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '10000'))
     LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY', 'bulk')
     
+    # Notification Settings
+    ENABLE_NOTIFICATIONS: bool = os.getenv('ENABLE_NOTIFICATIONS', 'false').lower() == 'true'
+    SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL', '')
+    NOTIFICATION_ON_SUCCESS: bool = os.getenv('NOTIFICATION_ON_SUCCESS', 'true').lower() == 'true'
+    NOTIFICATION_ON_FAILURE: bool = os.getenv('NOTIFICATION_ON_FAILURE', 'true').lower() == 'true'
+    NOTIFICATION_ON_PARTIAL: bool = os.getenv('NOTIFICATION_ON_PARTIAL', 'true').lower() == 'true'
+    
     # Derived paths
     EXTRACTED_OUTPUT_DIR: str = os.path.join(os.getenv('OUTPUT_DIR'), 'extracted')
     
