@@ -258,14 +258,14 @@ class Pipeline:
                 with open(transformed_file, 'r') as f:
                     data = json.load(f)
             tables = data.get('tables', {})
-                
-                self.logger.info(f"Successfully transformed {len(tables)} tables:")
-                
-                for table_name, records in tables.items():
-                    record_count = len(records)
-                    self.metrics['transformation']['records_transformed'] += record_count
-                    self.metrics['transformation']['tables_transformed'].append(table_name)
-                    self.logger.info(f"  - {table_name}: {record_count:,} records")
+            
+            self.logger.info(f"Successfully transformed {len(tables)} tables:")
+            
+            for table_name, records in tables.items():
+                record_count = len(records)
+                self.metrics['transformation']['records_transformed'] += record_count
+                self.metrics['transformation']['tables_transformed'].append(table_name)
+                self.logger.info(f"  - {table_name}: {record_count:,} records")
             
             transformation_time = (datetime.now() - transformation_start).total_seconds()
             
