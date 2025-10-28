@@ -13,6 +13,7 @@ from typing import Dict, Any, List, Optional
 from .base import BaseLoader
 from .data_sources import SQLiteDataSource, SnowflakeDataSource
 from src.config import settings
+from src.utils.memory_monitor import MemoryMonitor
 
 
 class DataLoader(BaseLoader):
@@ -27,6 +28,13 @@ class DataLoader(BaseLoader):
         self.data_store = self.settings.DATA_STORE
         
         super().__init__()
+        
+        # Initialize memory monitor
+        self.memory_monitor = MemoryMonitor(
+            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            enable_limit=settings.ENABLE_MEMORY_LIMIT
+        )
+        
         self.logger.info(f"DataLoader initialized for {self.data_store} (Environment: {self.settings.ENVIRONMENT})")
     
     def _load_config(self) -> Dict:
@@ -91,7 +99,16 @@ class DataLoader(BaseLoader):
             self.logger.info(f"Source file: {filepath}")
             self.logger.info(f"Target: {self.data_store.upper()}")
             
-            # Load JSON data
+            # Check file size
+            file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+            self.logger.info(f"File size: {file_size_mb:.2f} MB")
+            
+            # For large files, use streaming approach
+            if file_size_mb > 50:  # 50MB threshold for loading
+                self.logger.info("Large file detected - using streaming loader")
+                return self._load_streaming(filepath)
+            
+            # For smaller files, use original approach
             self.logger.debug("Loading JSON data from file...")
             data = self.load_json_file(filepath)
             
@@ -230,6 +247,235 @@ class DataLoader(BaseLoader):
                 'skipped_tables': [],
                 'error': str(e)
             }
+    
+    def _load_streaming(self, filepath: str) -> bool:
+        """
+        Load data using streaming approach for large files
+        
+        This method processes the JSON file table by table without loading
+        the entire file into memory.
+        
+        Args:
+            filepath: Path to the transformed JSON file
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        import gc
+        import json
+        
+        try:
+            # Get data source and connect
+            data_source = self._get_data_source()
+            self.logger.info(f"Connecting to {self.data_store}...")
+            data_source.connect()
+            self.logger.info("Connection established successfully")
+            
+            # Track statistics
+            total_records = 0
+            loaded_tables = 0
+            failed_tables = []
+            skipped_tables = []
+            
+            # First, extract table names from the file
+            self.logger.info("Analyzing file structure...")
+            table_names = self._extract_table_names(filepath)
+            self.logger.info(f"Found {len(table_names)} tables to load")
+            
+            # Process each table one by one
+            for idx, table_name in enumerate(table_names):
+                self.logger.info(f"[{idx+1}/{len(table_names)}] Loading table: {table_name}")
+                
+                try:
+                    # Check memory before loading table
+                    self.memory_monitor.check_memory(f"before loading {table_name}")
+                    
+                    # Extract just this table's data from the file
+                    table_data = self._extract_single_table(filepath, table_name)
+                    
+                    if not table_data:
+                        self.logger.warning(f"Table '{table_name}' has no records, skipping")
+                        skipped_tables.append(table_name)
+                        continue
+                    
+                    # Determine loading method
+                    if self.settings.LOAD_STRATEGY == 'optimized' and \
+                       self.data_store == 'snowflake' and \
+                       len(table_data) > self.settings.SNOWFLAKE_COPY_THRESHOLD:
+                        # Use COPY command for large datasets
+                        success = data_source.load_data_bulk(table_name, table_data)
+                    else:
+                        # Use INSERT for smaller datasets
+                        success = data_source.load_data(table_name, table_data)
+                    
+                    if success:
+                        loaded_tables += 1
+                        total_records += len(table_data)
+                        self.logger.info(f"  Successfully loaded {len(table_data):,} records into '{table_name}'")
+                    else:
+                        failed_tables.append(table_name)
+                        self.logger.error(f"  Failed to load table '{table_name}'")
+                    
+                    # Clear memory after each table
+                    del table_data
+                    gc.collect()
+                    
+                    # Log memory status
+                    self.memory_monitor.log_memory_status(f"After loading {table_name}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error loading table '{table_name}': {str(e)}")
+                    failed_tables.append(table_name)
+            
+            # Disconnect
+            self.logger.debug("Closing database connection...")
+            data_source.disconnect()
+            self.logger.debug("Connection closed")
+            
+            # Log final summary
+            self.logger.info("=" * 60)
+            self.logger.info("STREAMING LOADING SUMMARY:")
+            self.logger.info(f"  Tables loaded: {loaded_tables}")
+            self.logger.info(f"  Tables failed: {len(failed_tables)}")
+            self.logger.info(f"  Tables skipped: {len(skipped_tables)}")
+            self.logger.info(f"  Total records: {total_records:,}")
+            
+            if failed_tables:
+                self.logger.error(f"  Failed tables: {failed_tables}")
+            
+            self.logger.info("=" * 60)
+            
+            return {
+                'success': len(failed_tables) == 0,
+                'loaded_tables': loaded_tables,
+                'failed_tables': failed_tables,
+                'total_records': total_records,
+                'skipped_tables': skipped_tables
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error in streaming loader: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'loaded_tables': 0,
+                'failed_tables': [],
+                'total_records': 0,
+                'skipped_tables': [],
+                'error': str(e)
+            }
+    
+    def _extract_table_names(self, filepath: str) -> List[str]:
+        """
+        Extract table names from the JSON file without loading the entire file
+        """
+        table_names = []
+        
+        with open(filepath, 'r') as f:
+            # Use a simple state machine to find table names
+            in_tables_section = False
+            in_string = False
+            current_key = ""
+            depth = 0
+            
+            while True:
+                char = f.read(1)
+                if not char:
+                    break
+                
+                if char == '"':
+                    if not in_string:
+                        in_string = True
+                        current_key = ""
+                    else:
+                        in_string = False
+                        # Check if we just read "tables"
+                        if current_key == "tables" and not in_tables_section:
+                            in_tables_section = True
+                            depth = 0
+                        # If we're in tables section at depth 1, this is a table name
+                        elif in_tables_section and depth == 1:
+                            table_names.append(current_key)
+                elif in_string:
+                    current_key += char
+                elif char == '{':
+                    depth += 1
+                elif char == '}':
+                    depth -= 1
+                    if in_tables_section and depth == 0:
+                        break  # We've finished the tables section
+        
+        return table_names
+    
+    def _extract_single_table(self, filepath: str, table_name: str) -> List[Dict]:
+        """
+        Extract a single table's data from the JSON file using ijson for streaming
+        """
+        try:
+            # Try to use ijson for efficient streaming if available
+            import ijson
+            
+            with open(filepath, 'rb') as f:
+                parser = ijson.items(f, f'tables.{table_name}.item')
+                return list(parser)
+                
+        except ImportError:
+            # Fallback to manual parsing if ijson not available
+            self.logger.warning("ijson not available, using fallback parser")
+            return self._extract_single_table_fallback(filepath, table_name)
+    
+    def _extract_single_table_fallback(self, filepath: str, table_name: str) -> List[Dict]:
+        """
+        Fallback method to extract table data without ijson
+        """
+        import json
+        
+        # This is less efficient but still better than loading the entire file
+        with open(filepath, 'r') as f:
+            # Read file in chunks and look for our table
+            buffer = ""
+            found_table = False
+            bracket_count = 0
+            capture_start = -1
+            
+            while True:
+                chunk = f.read(8192)  # 8KB chunks
+                if not chunk:
+                    break
+                
+                buffer += chunk
+                
+                # Look for table name pattern
+                if not found_table:
+                    pattern = f'"{table_name}":'
+                    idx = buffer.find(pattern)
+                    if idx != -1:
+                        found_table = True
+                        # Find the opening bracket
+                        start_idx = buffer.find('[', idx)
+                        if start_idx != -1:
+                            capture_start = start_idx
+                            bracket_count = 1
+                            buffer = buffer[start_idx:]
+                
+                # Count brackets to find the end
+                if found_table and bracket_count > 0:
+                    for i, char in enumerate(buffer):
+                        if char == '[':
+                            bracket_count += 1
+                        elif char == ']':
+                            bracket_count -= 1
+                            if bracket_count == 0:
+                                # Found the complete array
+                                array_json = buffer[:i+1]
+                                return json.loads(array_json)
+                
+                # Keep only last part of buffer
+                if len(buffer) > 100000:
+                    buffer = buffer[-10000:]
+        
+        return []
     
     def get_connection(self):
         """Get connection to the data store"""

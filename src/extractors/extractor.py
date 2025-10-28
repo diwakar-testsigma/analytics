@@ -21,6 +21,7 @@ import gc
 
 from .base import BaseExtractor
 from .extraction_mapping import should_extract_table
+from ..utils.memory_monitor import MemoryMonitor, estimate_table_memory
 
 class DataExtractor(BaseExtractor):
     """Simplified MySQL data extractor with proper resource management"""
@@ -35,6 +36,13 @@ class DataExtractor(BaseExtractor):
         self._date_filter_cache = None
         self._connection_pool = {}  # Connection pooling for reuse
         self._table_columns_cache = {}  # Cache all columns per database
+        
+        # Initialize memory monitor
+        from ..config import settings
+        self.memory_monitor = MemoryMonitor(
+            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            enable_limit=settings.ENABLE_MEMORY_LIMIT
+        )
         
         # Register cleanup function to prevent fatal errors
         atexit.register(self._cleanup)
@@ -119,7 +127,8 @@ class DataExtractor(BaseExtractor):
                     'extract_direction': extract_direction,
                     'days_count': settings.EXTRACT_DAYS_COUNT,
                     'hours_count': settings.EXTRACT_HOURS_COUNT
-                }
+                },
+                'max_memory_per_table_mb': settings.MAX_MEMORY_PER_TABLE_MB
             }
     
     def get_connection(self, config: Dict, database: Optional[str] = None):
@@ -737,7 +746,7 @@ class DataExtractor(BaseExtractor):
                 except:
                     pass
     
-    def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
+    def extract_table_data(self, database: str, table_name: str, limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
         # Quick check: Use extraction mapping to determine if table should be extracted
         # Tables in SKIP_TABLES are not required by transformation mappings
@@ -749,9 +758,14 @@ class DataExtractor(BaseExtractor):
         if total_rows == 0:
             return []
         
+        # Apply limit if specified
+        if limit and total_rows > limit:
+            total_rows = limit
+        
         # For small tables (<10k rows), extract in single batch (faster, no threading overhead)
         if total_rows < 10000:
-            return self.extract_table_batch(database, table_name, 0)
+            data = self.extract_table_batch(database, table_name, 0)
+            return data[:limit] if limit else data
         
         # For large tables, use parallel extraction with optimized worker count
         all_data = []
@@ -861,15 +875,41 @@ class DataExtractor(BaseExtractor):
         tables_with_data = 0
         for table in tables_to_extract:
             try:
-                table_data = self.extract_table_data(database, table)
+                # Check memory before extracting table
+                self.memory_monitor.check_memory(f"before extracting {database}.{table}")
+                
+                # Check if table is too large for available memory
+                count = self.get_table_count(database, table)
+                if count > 0:
+                    # Estimate memory needed (rough estimate: 1KB per row)
+                    estimated_mb = count / 1000
+                    if self.memory_monitor.enable_limit and estimated_mb > self.config.get('max_memory_per_table_mb', 500):
+                        self.logger.warning(
+                            f"Table {database}.{table} too large ({count:,} rows, ~{estimated_mb:.1f}MB), "
+                            f"exceeds MAX_MEMORY_PER_TABLE_MB={self.config.get('max_memory_per_table_mb', 500)}MB - sampling instead"
+                        )
+                        # Extract only a sample for very large tables
+                        table_data = self.extract_table_data(database, table, limit=10000)
+                    else:
+                        table_data = self.extract_table_data(database, table)
+                else:
+                    table_data = []
                 
                 if table_data:
                     database_data[table] = {
-                        'records': len(table_data),
+                        'records': count if count > 0 else len(table_data),
                         'sample': table_data
                     }
                     tables_with_data += 1
                     
+                    # Log memory after extracting
+                    self.memory_monitor.log_memory_status(f"After {database}.{table}")
+                    
+            except MemoryError as e:
+                self.logger.error(f"Memory limit exceeded for {database}.{table}: {e}")
+                # Try to continue with other tables after freeing memory
+                gc.collect()
+                self.memory_monitor.log_memory_status("After garbage collection")
             except Exception as e:
                 self.logger.error(f"Failed to extract {database}.{table}: {e}")
         

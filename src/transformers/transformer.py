@@ -9,12 +9,14 @@ transformation mappings.
 import json
 import os
 import math
+import gc
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, List, Any, Optional
 import logging
 from .transformation_mapping import ALL_MAPPINGS, get_source_tables, get_column_mappings, list_all_tables
+from ..utils.memory_monitor import MemoryMonitor
 
 
 class DataTransformer:
@@ -39,6 +41,13 @@ class DataTransformer:
         
         self.logger = logging.getLogger(__name__)
         self.target_tables = list_all_tables()
+        
+        # Initialize memory monitor
+        from ..config import settings
+        self.memory_monitor = MemoryMonitor(
+            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            enable_limit=settings.ENABLE_MEMORY_LIMIT
+        )
         
         # Ensure output directory exists
         os.makedirs(self.config['output_dir'], exist_ok=True)
@@ -365,7 +374,7 @@ class DataTransformer:
     
     def transform_file(self, filepath: str) -> str:
         """
-        Transform data from an extracted file
+        Transform data from an extracted file using streaming to handle large files
         
         Args:
             filepath: Path to extracted data file
@@ -375,7 +384,17 @@ class DataTransformer:
         """
         self.logger.info(f"Transforming file: {filepath}")
         
-        # Load extracted data
+        # Check file size to warn about large files
+        import os
+        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        self.logger.info(f"File size: {file_size_mb:.2f} MB")
+        
+        # For very large files, use streaming approach
+        if file_size_mb > 100:  # If file is larger than 100MB
+            self.logger.info("Large file detected - using streaming transformation")
+            return self._transform_file_streaming(filepath)
+        
+        # For smaller files, use the original approach
         with open(filepath, 'r') as f:
             extracted_data = json.load(f)
         
@@ -551,6 +570,229 @@ class DataTransformer:
                         result[table].extend(records)
         
         return result
+    
+    def _transform_file_streaming(self, filepath: str) -> str:
+        """
+        Transform a large file using streaming to avoid memory issues
+        
+        This method processes the JSON file database by database without loading
+        the entire file into memory.
+        
+        Args:
+            filepath: Path to large extracted data file
+            
+        Returns:
+            Path to transformed data file
+        """
+        import gc
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"snowflake_data_{timestamp}.json"
+        output_path = os.path.join(self.config['output_dir'], output_filename)
+        
+        # First, extract just the structure to understand the file
+        self.logger.info("Analyzing file structure...")
+        databases = []
+        with open(filepath, 'r') as f:
+            # Read first character to check if it's a JSON object
+            first_char = f.read(1)
+            if first_char != '{':
+                raise ValueError("Expected JSON object")
+            
+            # Simple parser to extract top-level keys (database names)
+            current_key = ""
+            in_string = False
+            escape_next = False
+            depth = 1
+            
+            while depth > 0:
+                char = f.read(1)
+                if not char:
+                    break
+                    
+                if escape_next:
+                    escape_next = False
+                    if in_string:
+                        current_key += char
+                    continue
+                    
+                if char == '\\':
+                    escape_next = True
+                    if in_string:
+                        current_key += char
+                    continue
+                    
+                if char == '"' and not escape_next:
+                    if not in_string:
+                        in_string = True
+                        current_key = ""
+                    else:
+                        in_string = False
+                        if depth == 1 and current_key and current_key != "extraction_metadata":
+                            databases.append(current_key)
+                    continue
+                    
+                if in_string:
+                    current_key += char
+                else:
+                    if char == '{':
+                        depth += 1
+                    elif char == '}':
+                        depth -= 1
+        
+        self.logger.info(f"Found {len(databases)} databases to transform")
+        
+        # Initialize output file with proper structure
+        with open(output_path, 'w') as out_f:
+            out_f.write('{\n')
+            out_f.write(f'  "etl_timestamp": "{datetime.now().isoformat()}",\n')
+            out_f.write('  "tables": {\n')
+        
+        # Track all transformed tables
+        all_tables_data = {table: [] for table in self.target_tables}
+        total_processed = 0
+        
+        # Process each database one at a time
+        for idx, database in enumerate(databases):
+            self.logger.info(f"Processing database {idx+1}/{len(databases)}: {database}")
+            
+            try:
+                # Extract just this database's data
+                database_data = self._extract_single_database_from_file(filepath, database)
+                
+                if database_data:
+                    # Check memory before transformation
+                    self.memory_monitor.check_memory(f"before transforming {database}")
+                    
+                    # Transform this database's data
+                    transformed_data = self.transform_database_data(database, database_data)
+                    
+                    # Accumulate results
+                    for table, records in transformed_data.items():
+                        all_tables_data[table].extend(records)
+                    
+                    # Log progress
+                    db_records = sum(len(records) for records in transformed_data.values())
+                    total_processed += db_records
+                    self.logger.info(f"  Transformed {db_records} records from {database}")
+                    
+                    # Clear memory
+                    del database_data
+                    del transformed_data
+                    gc.collect()
+                    
+                    # Log memory status
+                    self.memory_monitor.log_memory_status(f"After transforming {database}")
+                    
+            except Exception as e:
+                self.logger.error(f"Error processing database {database}: {e}")
+        
+        # Write all transformed data to output file
+        with open(output_path, 'a') as out_f:
+            table_count = 0
+            total_tables = len(all_tables_data)
+            
+            for table_name, records in all_tables_data.items():
+                if table_count > 0:
+                    out_f.write(',\n')
+                
+                out_f.write(f'    "{table_name}": ')
+                
+                # Sanitize and write records
+                if records:
+                    sanitized_records = self.sanitize_records(records)
+                    json.dump(sanitized_records, out_f, default=str, ensure_ascii=False, separators=(',', ':'))
+                    self.logger.info(f"  Written {table_name}: {len(sanitized_records)} records")
+                else:
+                    out_f.write('[]')
+                
+                table_count += 1
+                
+                # Clear memory after writing large tables
+                if len(records) > 10000:
+                    all_tables_data[table_name] = None
+                    gc.collect()
+            
+            out_f.write('\n  }\n}')
+        
+        self.logger.info(f"Streaming transformation complete: {total_processed} total records")
+        return output_path
+    
+    def _extract_single_database_from_file(self, filepath: str, target_database: str) -> Dict:
+        """
+        Extract a single database's data from a large JSON file without loading the entire file
+        
+        Args:
+            filepath: Path to the JSON file
+            target_database: Name of the database to extract
+            
+        Returns:
+            Dictionary containing the database's data
+        """
+        with open(filepath, 'r') as f:
+            # Use a simple state machine to find and extract the target database
+            current_key = ""
+            in_string = False
+            escape_next = False
+            found_database = False
+            brace_count = 0
+            capture_data = False
+            json_buffer = ""
+            
+            while True:
+                char = f.read(1)
+                if not char:
+                    break
+                
+                if escape_next:
+                    escape_next = False
+                    if capture_data:
+                        json_buffer += char
+                    continue
+                
+                if char == '\\':
+                    escape_next = True
+                    if capture_data:
+                        json_buffer += char
+                    continue
+                
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    if capture_data:
+                        json_buffer += char
+                    elif not in_string and current_key == target_database and not found_database:
+                        # We found our target database
+                        found_database = True
+                        # Skip until we find the opening brace
+                        while True:
+                            char = f.read(1)
+                            if char == '{':
+                                capture_data = True
+                                json_buffer = '{'
+                                brace_count = 1
+                                break
+                    if in_string and not capture_data:
+                        current_key = ""
+                    continue
+                
+                if in_string and not capture_data:
+                    current_key += char
+                elif capture_data:
+                    json_buffer += char
+                    if not in_string:
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                # We've captured the entire database object
+                                try:
+                                    return json.loads(json_buffer)
+                                except json.JSONDecodeError as e:
+                                    self.logger.error(f"Failed to parse database {target_database}: {e}")
+                                    return {}
+        
+        return {}
     
     def get_transformation_stats(self, transformed_file: str) -> Dict:
         """Get statistics about transformed data"""
