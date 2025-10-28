@@ -247,8 +247,8 @@ class StreamingDataTransformer:
             out_file.write(f'  "etl_timestamp": "{datetime.now().isoformat()}",\n')
             out_file.write('  "tables": {\n')
             
-            # Buffer for each target table
-            table_buffers = {table: [] for table in self.target_tables}
+            # Buffer for each target table (create on demand)
+            table_buffers = {}
             first_table_written = False
             
             # Process records in streaming fashion
@@ -263,6 +263,10 @@ class StreamingDataTransformer:
                             # Transform the record
                             transformed = self._transform_record(source_table, record, target_table, column_mappings)
                             if transformed:
+                                # Create buffer on first use
+                                if target_table not in table_buffers:
+                                    table_buffers[target_table] = []
+                                
                                 table_buffers[target_table].append(transformed)
                                 
                                 # Write batch if buffer is full
@@ -286,7 +290,7 @@ class StreamingDataTransformer:
             
             # Write any empty tables
             for target_table in self.target_tables:
-                if target_table not in transformed_count:
+                if target_table not in transformed_count and target_table not in table_buffers:
                     if first_table_written:
                         out_file.write(',\n')
                     out_file.write(f'    "{target_table}": []')
