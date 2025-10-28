@@ -121,10 +121,17 @@ class Pipeline:
             latest_file = max(extracted_files, key=lambda p: p.stat().st_mtime)
             self.logger.info(f"Using existing extracted file: {latest_file}")
             
-            # Update metrics without loading entire file
-            table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
-            self.metrics['extraction']['records_extracted'] = total_records
-            self.metrics['extraction']['tables_extracted'] = list(table_counts.keys())
+            # Skip metrics for large files when skipping extraction
+            file_size_mb = latest_file.stat().st_size / (1024 * 1024)
+            if file_size_mb > 1000:  # Skip metrics for files > 1GB
+                self.logger.info(f"Skipping metrics for large file ({file_size_mb:.0f}MB)")
+                self.metrics['extraction']['records_extracted'] = -1  # Unknown
+                self.metrics['extraction']['tables_extracted'] = []
+            else:
+                # Update metrics for smaller files
+                table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
+                self.metrics['extraction']['records_extracted'] = total_records
+                self.metrics['extraction']['tables_extracted'] = list(table_counts.keys())
             
             return str(latest_file)
         
@@ -228,10 +235,17 @@ class Pipeline:
             latest_file = max(transformed_files, key=lambda p: p.stat().st_mtime)
             self.logger.info(f"Using existing transformed file: {latest_file}")
             
-            # Update metrics without loading entire file
-            table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
-            self.metrics['transformation']['records_transformed'] = total_records
-            self.metrics['transformation']['tables_transformed'] = list(table_counts.keys())
+            # Skip metrics for large files when skipping transformation
+            file_size_mb = latest_file.stat().st_size / (1024 * 1024)
+            if file_size_mb > 100:  # Skip metrics for files > 100MB
+                self.logger.info(f"Skipping metrics for large file ({file_size_mb:.0f}MB)")
+                self.metrics['transformation']['records_transformed'] = -1  # Unknown
+                self.metrics['transformation']['tables_transformed'] = []
+            else:
+                # Update metrics for smaller files
+                table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
+                self.metrics['transformation']['records_transformed'] = total_records
+                self.metrics['transformation']['tables_transformed'] = list(table_counts.keys())
             
             return str(latest_file)
         
