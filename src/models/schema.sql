@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS dim_users (
 CREATE TABLE IF NOT EXISTS dim_organizations (
     organization_id INTEGER PRIMARY KEY,
     organization_uuid VARCHAR(255),
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     created_by_id INTEGER,
     updated_by_id INTEGER,
     created_at TIMESTAMP,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS dim_organizations (
 
 CREATE TABLE IF NOT EXISTS dim_accounts (
     account_id INTEGER PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     smtp_type VARCHAR(100),
     auth_module_type VARCHAR(100),
     auth_enabled BOOLEAN,
@@ -68,11 +68,11 @@ CREATE TABLE IF NOT EXISTS dim_tenants (
 
 CREATE TABLE IF NOT EXISTS brg_tenant_features (
     tenant_feature_id INTEGER PRIMARY KEY,
-    tenant_id INTEGER NOT NULL,
+    tenant_id INTEGER,
     feature_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    feature_name VARCHAR(255) NOT NULL,
+    feature_name VARCHAR(255),
     is_add_on BOOLEAN DEFAULT FALSE,
     etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
 );
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS dim_features (
 
 CREATE TABLE IF NOT EXISTS dim_data_generators (
     generator_id INTEGER PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     display_name VARCHAR(255),
     description TEXT,
     created_at TIMESTAMP,
@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS dim_data_generators (
 
 CREATE TABLE IF NOT EXISTS dim_nlp_templates (
     template_id INTEGER PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     content TEXT,
     language VARCHAR(50),
     category VARCHAR(100),
@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS dim_nlp_templates (
 CREATE TABLE IF NOT EXISTS dim_object_types (
     object_type_id INTEGER PRIMARY KEY,
     name VARCHAR(255),
-    display_name VARCHAR(255) NOT NULL,
+    display_name VARCHAR(255),
     class_name VARCHAR(255),
     technology VARCHAR(100),
     package_name VARCHAR(500),
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS dim_projects (
     project_uuid BIGINT,
     name VARCHAR(255),
     description TEXT,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     created_by_id INTEGER,
     updated_by_id INTEGER,
     created_at TIMESTAMP,
@@ -149,9 +149,9 @@ CREATE TABLE IF NOT EXISTS dim_projects (
 CREATE TABLE IF NOT EXISTS dim_applications (
     app_id INTEGER PRIMARY KEY,
     app_uuid VARCHAR(255),
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     description TEXT,
-    tenant_id INTEGER NOT NULL,
+    tenant_id INTEGER,
     status VARCHAR(50),
     created_by_id INTEGER,
     updated_by_id INTEGER,
@@ -165,7 +165,7 @@ CREATE TABLE IF NOT EXISTS dim_test_cases (
     test_case_uuid BIGINT,
     name VARCHAR(500),
     description TEXT,
-    app_id INTEGER NOT NULL,
+    app_id INTEGER,
     tenant_id BIGINT,
     status VARCHAR(50),
     priority VARCHAR(100),
@@ -183,10 +183,10 @@ CREATE TABLE IF NOT EXISTS dim_test_cases (
 
 CREATE TABLE IF NOT EXISTS fct_test_steps (
     step_id INTEGER PRIMARY KEY,
-    test_case_id INTEGER NOT NULL,
+    test_case_id INTEGER,
     tenant_id BIGINT,
     user_id INTEGER,
-    step_order INTEGER NOT NULL,
+    step_order INTEGER,
     step_type VARCHAR(100),
     step_data TEXT,
     expected_result TEXT,
@@ -199,12 +199,12 @@ CREATE TABLE IF NOT EXISTS fct_test_steps (
 CREATE TABLE IF NOT EXISTS fct_executions (
     execution_id INTEGER PRIMARY KEY,
     execution_uuid BIGINT,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     user_id INTEGER,
     app_id INTEGER,
     test_suite_id INTEGER,
-    status VARCHAR(50) NOT NULL,
-    start_time TIMESTAMP NOT NULL,
+    status VARCHAR(50),
+    start_time TIMESTAMP,
     end_time TIMESTAMP,
     duration_seconds INTEGER,
     triggered_by VARCHAR(100),
@@ -217,12 +217,12 @@ CREATE TABLE IF NOT EXISTS fct_executions (
 
 CREATE TABLE IF NOT EXISTS fct_test_results (
     result_id INTEGER PRIMARY KEY,
-    execution_id INTEGER NOT NULL,
-    test_case_id INTEGER NOT NULL,
+    execution_id INTEGER,
+    test_case_id INTEGER,
     tenant_id BIGINT,
     user_id INTEGER,
-    status VARCHAR(50) NOT NULL,
-    start_time TIMESTAMP NOT NULL,
+    status VARCHAR(50),
+    start_time TIMESTAMP,
     end_time TIMESTAMP,
     duration_seconds INTEGER,
     error_message TEXT,
@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS dim_elements (
     element_id INTEGER PRIMARY KEY,
     element_uuid VARCHAR(255),
     locator TEXT,
-    app_id INTEGER NOT NULL,
+    app_id INTEGER,
     tenant_id INTEGER,
     created_by_id INTEGER,
     updated_by_id INTEGER,
@@ -268,7 +268,7 @@ CREATE TABLE IF NOT EXISTS dim_agents (
     name VARCHAR(255),
     config_json TEXT,
     status VARCHAR(50),
-    tenant_id INTEGER NOT NULL,
+    tenant_id INTEGER,
     created_by_id INTEGER,
     updated_by_id INTEGER,
     created_at TIMESTAMP,
@@ -281,7 +281,7 @@ CREATE TABLE IF NOT EXISTS dim_agents (
 
 CREATE TABLE IF NOT EXISTS fct_api_steps (
     api_step_id INTEGER PRIMARY KEY,
-    test_step_id INTEGER NOT NULL,
+    test_step_id INTEGER,
     tenant_id BIGINT,
     user_id INTEGER,
     method VARCHAR(20),
@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS fct_api_steps (
 
 CREATE TABLE IF NOT EXISTS fct_accessibility_results (
     result_id INTEGER PRIMARY KEY,
-    test_case_id INTEGER NOT NULL,
+    test_case_id INTEGER,
     execution_id INTEGER,
     tenant_id BIGINT,
     user_id INTEGER,
@@ -317,10 +317,10 @@ CREATE TABLE IF NOT EXISTS fct_accessibility_results (
 CREATE TABLE IF NOT EXISTS dim_test_suites (
     test_suite_id INTEGER PRIMARY KEY,
     test_suite_uuid BIGINT,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
     description TEXT,
     app_id INTEGER,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     status VARCHAR(50),
     created_by_id INTEGER,
     updated_by_id INTEGER,
@@ -332,7 +332,7 @@ CREATE TABLE IF NOT EXISTS dim_test_suites (
 
 CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
     metric_id INTEGER PRIMARY KEY,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     test_plan_result_id INTEGER,
     result VARCHAR(100),
     latest_result VARCHAR(100),
@@ -352,8 +352,8 @@ CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
 
 CREATE TABLE IF NOT EXISTS fct_test_plan_results (
     test_plan_result_id INTEGER PRIMARY KEY,
-    test_plan_id INTEGER NOT NULL,
-    tenant_id BIGINT NOT NULL,
+    test_plan_id INTEGER,
+    tenant_id BIGINT,
     user_id INTEGER,
     status VARCHAR(50),
     latest_status VARCHAR(50),
@@ -372,7 +372,7 @@ CREATE TABLE IF NOT EXISTS fct_test_plan_results (
 CREATE TABLE IF NOT EXISTS fct_agent_activity (
     activity_id INTEGER PRIMARY KEY,
     agent_id INTEGER,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     user_id INTEGER,
     activity_type VARCHAR(100),
     description TEXT,
@@ -391,7 +391,7 @@ CREATE TABLE IF NOT EXISTS fct_audit_events (
     entity_type VARCHAR(100),
     entity_id INTEGER,
     user_id INTEGER,
-    tenant_id BIGINT NOT NULL,
+    tenant_id BIGINT,
     changes_json TEXT,
     ip_address VARCHAR(100),
     timestamp TIMESTAMP,
