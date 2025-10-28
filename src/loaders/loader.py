@@ -8,8 +8,9 @@ Automatically selects SQLite for local environment and Snowflake for production.
 import json
 import logging
 import os
+import gzip
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, IO
 from .base import BaseLoader
 from .data_sources import SQLiteDataSource, SnowflakeDataSource
 from src.config import settings
@@ -76,6 +77,21 @@ class DataLoader(BaseLoader):
         
         return self.data_source
     
+    def _open_file(self, filepath: str) -> IO:
+        """
+        Open file with automatic compression detection
+        
+        Args:
+            filepath: Path to file
+            
+        Returns:
+            File handle
+        """
+        if filepath.endswith('.gz'):
+            return gzip.open(filepath, 'rt', encoding='utf-8')
+        else:
+            return open(filepath, 'r', encoding='utf-8')
+    
     def load(self, filepath: str) -> bool:
         """
         Load transformed data from JSON file into the configured data store
@@ -91,9 +107,13 @@ class DataLoader(BaseLoader):
             self.logger.info(f"Source file: {filepath}")
             self.logger.info(f"Target: {self.data_store.upper()}")
             
-            # Load JSON data
+            # Load JSON data (with compression support)
             self.logger.debug("Loading JSON data from file...")
-            data = self.load_json_file(filepath)
+            if filepath.endswith('.gz'):
+                self.logger.info("Detected compressed file, decompressing...")
+            
+            with self._open_file(filepath) as f:
+                data = json.load(f)
             
             # Get tables from the data
             tables = data.get('tables', {})

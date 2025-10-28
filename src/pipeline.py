@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
 from src.transformers.transformer import DataTransformer
+from src.transformers.streaming_transformer import StreamingDataTransformer
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags
@@ -139,7 +140,10 @@ class Pipeline:
         extraction_start = datetime.now()
         
         try:
-            self.logger.info(f"MySQL Connection: {self.config.MYSQL_CONNECTION_URL}")
+            self.logger.info("MySQL Connections:")
+            self.logger.info(f"  - Identity: {self.config.IDENTITY_MYSQL_CONNECTION_URL}")
+            self.logger.info(f"  - Master: {self.config.MASTER_MYSQL_CONNECTION_URL}")
+            self.logger.info(f"  - Tenant: {self.config.TENANT_MYSQL_CONNECTION_URL}")
             self.logger.info(f"DB Keywords Filter: {self.config.EXTRACT_DB_KEYWORDS}")
             
             # Create custom config if we have an override
@@ -230,16 +234,30 @@ class Pipeline:
             self.logger.info(f"Input file: {extracted_file}")
             self.logger.info("Loading transformation mappings...")
             
-            transformer = DataTransformer()
+            # Choose transformer based on configuration
+            if self.config.ENABLE_STREAMING_TRANSFORMATION:
+                self.logger.info("Using streaming transformer for memory efficiency")
+                transformer = StreamingDataTransformer()
+                # Use streaming transformation
+                transformed_file = transformer.transform_file_streaming(extracted_file)
+            else:
+                self.logger.info("Using standard transformer")
+                transformer = DataTransformer()
+                transformed_file = transformer.transform_file(extracted_file)
             
             # Transform the data
             self.logger.info("Applying transformations based on Snowflake schema...")
-            transformed_file = transformer.transform_file(extracted_file)
             
             # Update metrics
-            with open(transformed_file, 'r') as f:
-                data = json.load(f)
-                tables = data.get('tables', {})
+            # Handle both compressed and uncompressed files
+            if transformed_file.endswith('.gz'):
+                import gzip
+                with gzip.open(transformed_file, 'rt') as f:
+                    data = json.load(f)
+            else:
+                with open(transformed_file, 'r') as f:
+                    data = json.load(f)
+            tables = data.get('tables', {})
                 
                 self.logger.info(f"Successfully transformed {len(tables)} tables:")
                 

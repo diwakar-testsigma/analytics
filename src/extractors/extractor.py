@@ -68,19 +68,23 @@ class DataExtractor(BaseExtractor):
         
         # Check if we have a full custom config (backward compatibility)
         if self.custom_config and 'output_dir' in self.custom_config:
-            # For backward compatibility, build connection URL if individual params are provided
+            # For backward compatibility with old single URL config
             if 'mysql_connection_url' in self.custom_config:
+                # Use the single URL for all three connection types
                 mysql_url = self.custom_config['mysql_connection_url']
+                identity_url = self.custom_config.get('identity_mysql_connection_url', mysql_url)
+                master_url = self.custom_config.get('master_mysql_connection_url', mysql_url)
+                tenant_url = self.custom_config.get('tenant_mysql_connection_url', mysql_url)
             else:
-                # Build URL from individual parameters
-                host = self.custom_config.get('mysql_host', 'localhost')
-                port = self.custom_config.get('mysql_port', 3306)
-                user = self.custom_config.get('mysql_user', 'root')
-                password = self.custom_config.get('mysql_password', '')
-                mysql_url = f"mysql://{user}:{password}@{host}:{port}"
+                # Use the three separate URLs
+                identity_url = self.custom_config.get('identity_mysql_connection_url')
+                master_url = self.custom_config.get('master_mysql_connection_url')
+                tenant_url = self.custom_config.get('tenant_mysql_connection_url')
             
             return {
-                'mysql_connection_url': mysql_url,
+                'identity_mysql_connection_url': identity_url,
+                'master_mysql_connection_url': master_url,
+                'tenant_mysql_connection_url': tenant_url,
                 'extraction': {
                     'workers': self.custom_config.get('extraction_workers', 10),
                     'batch_size': self.custom_config.get('extraction_batch_size', 5000)
@@ -107,7 +111,9 @@ class DataExtractor(BaseExtractor):
                 extract_direction = settings.EXTRACT_DIRECTION
             
             return {
-                'mysql_connection_url': settings.MYSQL_CONNECTION_URL,
+                'identity_mysql_connection_url': settings.IDENTITY_MYSQL_CONNECTION_URL,
+                'master_mysql_connection_url': settings.MASTER_MYSQL_CONNECTION_URL,
+                'tenant_mysql_connection_url': settings.TENANT_MYSQL_CONNECTION_URL,
                 'extraction': {
                     'workers': settings.EXTRACTION_WORKERS,
                     'batch_size': settings.EXTRACTION_BATCH_SIZE,
@@ -139,15 +145,30 @@ class DataExtractor(BaseExtractor):
         """
         from urllib.parse import urlparse
         
-        # Get connection URL
-        if 'mysql_connection_url' in config:
-            connection_url = config['mysql_connection_url']
+        # Determine which connection URL to use based on database
+        if database:
+            # Check if this is a special database
+            if database.lower() == 'identity':
+                connection_url = config.get('identity_mysql_connection_url')
+                if not connection_url:
+                    raise ValueError("IDENTITY_MYSQL_CONNECTION_URL not found in configuration")
+            elif database.lower() == 'master':
+                connection_url = config.get('master_mysql_connection_url')
+                if not connection_url:
+                    raise ValueError("MASTER_MYSQL_CONNECTION_URL not found in configuration")
+            else:
+                # All other databases are tenant databases
+                connection_url = config.get('tenant_mysql_connection_url')
+                if not connection_url:
+                    raise ValueError("TENANT_MYSQL_CONNECTION_URL not found in configuration")
         else:
-            # Fallback for old config format
-            connection_url = config.get('mysql', {}).get('connection_url')
-        
-        if not connection_url:
-            raise ValueError("MySQL connection URL not found in configuration")
+            # No specific database, use tenant URL as default for listing databases
+            connection_url = config.get('tenant_mysql_connection_url')
+            if not connection_url:
+                # Fallback to identity URL for backward compatibility
+                connection_url = config.get('identity_mysql_connection_url')
+            if not connection_url:
+                raise ValueError("No MySQL connection URL found in configuration")
         
         # Parse the URL
         parsed = urlparse(connection_url)
@@ -186,55 +207,110 @@ class DataExtractor(BaseExtractor):
         self._connection_pool[pool_key] = conn
         return conn
     
-    def list_databases(self) -> List[str]:
-        """Get list of databases, excluding system and ignored databases"""
-        conn = None
-        cursor = None
-        try:
-            conn = self.get_connection(self.config)
-            cursor = conn.cursor()
+    def list_databases_from_connection(self, connection_type: str) -> List[str]:
+        """
+        Get list of databases from a specific connection type
+        
+        Args:
+            connection_type: One of 'identity', 'master', or 'tenant'
             
-            cursor.execute("SHOW DATABASES")
-            all_databases = [db[0] for db in cursor.fetchall()]
-            
-            # Filter out system databases
-            system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys']
-            databases = [db for db in all_databases if db not in system_dbs]
-            
-            # Filter databases by include keywords (if provided)
-            include_keywords = self.config['extract_db_keywords'].split(',')
-            include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
-            
-            if include_keywords:
-                # Only include databases that match one of the keywords
-                databases = [
-                    db for db in databases 
-                    if any(keyword in db.lower() for keyword in include_keywords)
-                ]
-            
-            # Filter out databases by exclude keywords (if provided)
-            exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
-            exclude_keywords = exclude_kw_str.split(',')
-            exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
-            
-            if exclude_keywords:
-                original_count = len(databases)
-                # Exclude databases that match any exclude keyword
-                databases = [
-                    db for db in databases
-                    if not any(exclude_kw in db.lower() for exclude_kw in exclude_keywords)
-                ]
-                excluded_count = original_count - len(databases)
-                # Excluded databases are not logged to reduce spam
-            
-            return databases
-        finally:
-            # Only close cursor, keep connection in pool
-            if cursor:
-                try:
+        Returns:
+            List of database names
+        """
+        # Create a temporary config with the appropriate connection URL
+        temp_config = self.config.copy()
+        
+        if connection_type == 'identity':
+            # For identity connection, we only return 'identity' database
+            return ['identity']
+        elif connection_type == 'master':
+            # For master connection, we only return 'master' database
+            return ['master']
+        elif connection_type == 'tenant':
+            # For tenant connection, list all databases except identity and master
+            conn = None
+            cursor = None
+            try:
+                # Use a dummy database parameter to trigger tenant URL selection
+                conn = self.get_connection(self.config, 'tenant_dummy')
+                cursor = conn.cursor()
+                
+                cursor.execute("SHOW DATABASES")
+                all_databases = [db[0] for db in cursor.fetchall()]
+                
+                # Filter out system databases and special databases
+                system_dbs = ['information_schema', 'mysql', 'performance_schema', 'sys', 'identity', 'master']
+                databases = [db for db in all_databases if db not in system_dbs]
+                
+                # Apply keyword filters
+                include_keywords = self.config.get('extract_db_keywords', '').split(',')
+                include_keywords = [kw.strip().lower() for kw in include_keywords if kw.strip()]
+                
+                if include_keywords:
+                    databases = [
+                        db for db in databases 
+                        if any(keyword in db.lower() for keyword in include_keywords)
+                    ]
+                
+                exclude_kw_str = self.config.get('extract_db_exclude_keywords') or ''
+                exclude_keywords = exclude_kw_str.split(',')
+                exclude_keywords = [kw.strip().lower() for kw in exclude_keywords if kw.strip()]
+                
+                if exclude_keywords:
+                    databases = [
+                        db for db in databases
+                        if not any(keyword in db.lower() for keyword in exclude_keywords)
+                    ]
+                
+                return databases
+                
+            finally:
+                if cursor:
                     cursor.close()
-                except:
-                    pass
+                if conn:
+                    conn.close()
+        else:
+            raise ValueError(f"Unknown connection type: {connection_type}")
+    
+    def list_databases(self) -> List[str]:
+        """Get list of all databases from all three connection types"""
+        all_databases = []
+        
+        # Check which connections are available
+        has_identity = bool(self.config.get('identity_mysql_connection_url'))
+        has_master = bool(self.config.get('master_mysql_connection_url'))
+        has_tenant = bool(self.config.get('tenant_mysql_connection_url'))
+        
+        # Get databases from each connection type
+        if has_identity:
+            try:
+                identity_dbs = self.list_databases_from_connection('identity')
+                all_databases.extend(identity_dbs)
+                self.logger.info(f"Found {len(identity_dbs)} identity database(s)")
+            except Exception as e:
+                self.logger.warning(f"Failed to get identity databases: {e}")
+        
+        if has_master:
+            try:
+                master_dbs = self.list_databases_from_connection('master')
+                all_databases.extend(master_dbs)
+                self.logger.info(f"Found {len(master_dbs)} master database(s)")
+            except Exception as e:
+                self.logger.warning(f"Failed to get master databases: {e}")
+        
+        if has_tenant:
+            try:
+                tenant_dbs = self.list_databases_from_connection('tenant')
+                all_databases.extend(tenant_dbs)
+                self.logger.info(f"Found {len(tenant_dbs)} tenant database(s)")
+            except Exception as e:
+                self.logger.warning(f"Failed to get tenant databases: {e}")
+        
+        # Remove duplicates while preserving order
+        unique_databases = list(dict.fromkeys(all_databases))
+        
+        self.logger.info(f"Total databases to extract: {len(unique_databases)}")
+        return unique_databases
     
     def _get_date_filter_params(self) -> Tuple[Optional[str], Optional[str]]:
         """

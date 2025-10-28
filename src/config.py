@@ -21,7 +21,9 @@ class Settings:
     ENVIRONMENT: str = os.getenv('ENVIRONMENT')
     
     # Database Connection URLs
-    MYSQL_CONNECTION_URL: str = os.getenv('MYSQL_CONNECTION_URL')
+    IDENTITY_MYSQL_CONNECTION_URL: str = os.getenv('IDENTITY_MYSQL_CONNECTION_URL')
+    MASTER_MYSQL_CONNECTION_URL: str = os.getenv('MASTER_MYSQL_CONNECTION_URL')
+    TENANT_MYSQL_CONNECTION_URL: str = os.getenv('TENANT_MYSQL_CONNECTION_URL')
     SNOWFLAKE_CONNECTION_URL: str = os.getenv('SNOWFLAKE_CONNECTION_URL')
     SQLITE_CONNECTION_URL: str = os.getenv('SQLITE_CONNECTION_URL')
     
@@ -59,6 +61,7 @@ class Settings:
     TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS'))
     TRANSFORMATION_BATCH_SIZE: int = int(os.getenv('TRANSFORMATION_BATCH_SIZE'))
     TRANSFORMATION_TIMEOUT: int = int(os.getenv('TRANSFORMATION_TIMEOUT'))
+    ENABLE_STREAMING_TRANSFORMATION: bool = os.getenv('ENABLE_STREAMING_TRANSFORMATION', 'true').lower() == 'true'
     
     # Database Connection Configuration
     CONNECTION_TIMEOUT: int = int(os.getenv('CONNECTION_TIMEOUT'))
@@ -69,6 +72,10 @@ class Settings:
     MAX_MEMORY_USAGE: int = int(os.getenv('MAX_MEMORY_USAGE'))
     CLEANUP_TEMP_FILES: bool = os.getenv('CLEANUP_TEMP_FILES').lower() == 'true'
     ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING').lower() == 'true'
+    
+    # Compression Configuration
+    ENABLE_COMPRESSION: bool = os.getenv('ENABLE_COMPRESSION', 'true').lower() == 'true'
+    COMPRESSION_LEVEL: int = int(os.getenv('COMPRESSION_LEVEL', '6'))
     
     # Snowflake Optimization Configuration
     SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD'))
