@@ -34,14 +34,24 @@ class StreamingDataTransformer:
             from ..config import settings
             self.config = {
                 'output_dir': settings.TRANSFORMED_OUTPUT_DIR,
-                'batch_size': getattr(settings, 'TRANSFORMATION_BATCH_SIZE', 10000),
+                'batch_size': getattr(settings, 'TRANSFORMATION_BATCH_SIZE', 100),  # Reduced for memory efficiency
                 'enable_compression': getattr(settings, 'ENABLE_COMPRESSION', True),
                 'compression_level': getattr(settings, 'COMPRESSION_LEVEL', 6)
             }
         
         self.logger = logging.getLogger(__name__)
-        self.target_tables = list_all_tables()
-        self.batch_size = self.config.get('batch_size', 10000)
+        self.batch_size = self.config.get('batch_size', 100)  # Small batches for large files
+        
+        # Build reverse mapping for efficiency: source_table -> target_tables
+        self.source_to_targets = {}
+        for target_table, mapping in ALL_MAPPINGS.items():
+            for source_table in mapping.get('source_tables', []):
+                if source_table not in self.source_to_targets:
+                    self.source_to_targets[source_table] = []
+                self.source_to_targets[source_table].append({
+                    'target': target_table,
+                    'columns': mapping.get('column_mappings', {})
+                })
         
         # Ensure output directory exists
         os.makedirs(self.config['output_dir'], exist_ok=True)
@@ -172,7 +182,7 @@ class StreamingDataTransformer:
         Yields:
             Tuples of (database_name, table_name, record)
         """
-        with self._open_file(filepath, 'rb') as f:
+        with self._open_file(filepath, 'r') as f:
             # Parse the JSON structure to identify databases and tables
             parser = ijson.parse(f)
             
@@ -255,10 +265,12 @@ class StreamingDataTransformer:
             for database, source_table, record in self._stream_database_data(filepath):
                 source_record_count += 1
                 
-                # Find target tables for this source table
-                for target_table, mapping in ALL_MAPPINGS.items():
-                    if source_table in mapping.get('source_tables', []):
-                        column_mappings = mapping.get('column_mappings', {})
+                # Only process if we have mappings for this source table
+                if source_table in self.source_to_targets:
+                    # Process only relevant target tables (much faster!)
+                    for target_info in self.source_to_targets[source_table]:
+                        target_table = target_info['target']
+                        column_mappings = target_info['columns']
                         if column_mappings:
                             # Transform the record
                             transformed = self._transform_record(source_table, record, target_table, column_mappings)
@@ -288,13 +300,14 @@ class StreamingDataTransformer:
                     first_table_written = True
                     transformed_count[target_table] = transformed_count.get(target_table, 0) + len(records)
             
-            # Write any empty tables
-            for target_table in self.target_tables:
-                if target_table not in transformed_count and target_table not in table_buffers:
-                    if first_table_written:
-                        out_file.write(',\n')
-                    out_file.write(f'    "{target_table}": []')
-                    first_table_written = True
+            # Skip writing empty tables - not needed and wastes memory
+            
+            # Close all open table arrays
+            if hasattr(self, '_written_tables'):
+                for i, table in enumerate(self._written_tables):
+                    out_file.write('\n    ]')
+                    if i < len(self._written_tables) - 1:
+                        out_file.write(',')
             
             # Close JSON structure
             out_file.write('\n  }\n}\n')
@@ -325,7 +338,7 @@ class StreamingDataTransformer:
             return
         
         # Update tracking
-        if table_name not in hasattr(self, '_written_tables'):
+        if not hasattr(self, '_written_tables'):
             self._written_tables = set()
         
         # Write table opening if first time
@@ -344,10 +357,9 @@ class StreamingDataTransformer:
         for i, record in enumerate(records):
             if not first_record or i > 0:
                 out_file.write(',\n')
-            json_str = orjson.dumps(record, option=orjson.OPT_INDENT_2).decode('utf-8')
-            # Indent the record
-            indented = '\n'.join('      ' + line for line in json_str.split('\n'))
-            out_file.write(indented)
+            # Write compactly to save memory
+            out_file.write('      ')
+            json.dump(record, out_file, separators=(',', ':'))
             first_record = False
     
     def transform_file_with_compression(self, filepath: str, compress_output: bool = True) -> str:
