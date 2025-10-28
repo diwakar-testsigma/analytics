@@ -211,6 +211,30 @@ class Pipeline:
         Returns:
             Path to transformed data file
         """
+        # Check if transformation should be skipped
+        if settings.SKIP_TRANSFORMATION:
+            self.logger.info("=" * 60)
+            self.logger.info("TRANSFORMATION PHASE SKIPPED (SKIP_TRANSFORMATION=true)")
+            self.logger.info("=" * 60)
+            
+            # Find the latest transformed file
+            output_dir = Path(self.config.TRANSFORMED_OUTPUT_DIR)
+            transformed_files = list(output_dir.glob("snowflake_data_*.json*"))
+            
+            if not transformed_files:
+                raise FileNotFoundError("No transformed files found to skip transformation")
+            
+            # Get the most recent file
+            latest_file = max(transformed_files, key=lambda p: p.stat().st_mtime)
+            self.logger.info(f"Using existing transformed file: {latest_file}")
+            
+            # Update metrics without loading entire file
+            table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
+            self.metrics['transformation']['records_transformed'] = total_records
+            self.metrics['transformation']['tables_transformed'] = list(table_counts.keys())
+            
+            return str(latest_file)
+        
         self.logger.info("=" * 60)
         self.logger.info("TRANSFORMATION PHASE STARTED")
         self.logger.info("=" * 60)
