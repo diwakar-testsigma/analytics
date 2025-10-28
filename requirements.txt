@@ -17,6 +17,10 @@ APScheduler==3.10.4
 # Logging and utilities
 colorlog==6.7.0
 
+# JSON processing and streaming
+ijson==3.3.0
+orjson==3.10.11
+
 # Monitoring
 prometheus-client==0.19.0
 
@@ -26,3 +30,9 @@ requests==2.31.0
 # Testing (optional)
 pytest==7.4.0
 pytest-cov==4.1.0
+
+# Compression
+python-magic==0.4.27
+
+# System monitoring (for testing)
+psutil==6.1.1

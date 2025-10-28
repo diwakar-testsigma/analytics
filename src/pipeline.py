@@ -18,7 +18,7 @@ from src.loaders.loader import DataLoader
 from src.transformers.transformer import DataTransformer
 from src.config import settings
 from src.notifications import notifier
-from src.utils.env_updater import update_extraction_state, reset_skip_flags
+from src.utils.env_updater import update_extraction_state, reset_skip_flags, update_transformation_state
 
 
 class Pipeline:
@@ -422,10 +422,10 @@ class Pipeline:
             success = self.load(transformed_file)
             self.metrics['success'] = success
             
-            # If everything succeeded, reset skip flag
+            # If everything succeeded, reset skip flags
             if success:
                 reset_skip_flags()
-                self.logger.info("✅ Reset SKIP_EXTRACTION=false for next run")
+                self.logger.info("✅ Reset SKIP_EXTRACTION=false and SKIP_TRANSFORMATION=false for next run")
             
             self.metrics['end_time'] = datetime.now()
             self.metrics['duration_seconds'] = (
@@ -466,6 +466,12 @@ class Pipeline:
                 extraction_timestamp = settings.EXTRACT_DATE or datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 update_extraction_state(extraction_timestamp, current_direction, skip_extraction=True)
                 self.logger.info("⚠️ Extraction succeeded but pipeline failed - setting SKIP_EXTRACTION=true for retry")
+            
+            # If transformation succeeded but loading failed, set SKIP_TRANSFORMATION=true
+            if self.metrics.get('transformation', {}).get('success', False) and not self.metrics.get('success', False):
+                # Transformation succeeded but loading failed
+                update_transformation_state(skip_transformation=True)
+                self.logger.info("⚠️ Transformation succeeded but loading failed - setting SKIP_TRANSFORMATION=true for retry")
             
             self._save_metrics()
             

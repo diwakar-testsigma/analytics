@@ -101,7 +101,25 @@ def update_extraction_state(extract_date: str, extract_direction: str, skip_extr
 def reset_skip_flags() -> bool:
     """Reset skip flags to false"""
     updates = {
-        'SKIP_EXTRACTION': 'false'
+        'SKIP_EXTRACTION': 'false',
+        'SKIP_TRANSFORMATION': 'false'
+    }
+    
+    return update_env_file(updates)
+
+
+def update_transformation_state(skip_transformation: bool = False) -> bool:
+    """
+    Update transformation state in .env file
+    
+    Args:
+        skip_transformation: Whether to skip transformation
+        
+    Returns:
+        True if successful
+    """
+    updates = {
+        'SKIP_TRANSFORMATION': 'true' if skip_transformation else 'false'
     }
     
     return update_env_file(updates)
