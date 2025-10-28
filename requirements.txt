@@ -17,6 +17,10 @@ APScheduler==3.10.4
 # Logging and utilities
 colorlog==6.7.0
 
+# Memory monitoring
+psutil==7.1.2
+ijson==3.2.3
+
 # Monitoring
 prometheus-client==0.19.0
 

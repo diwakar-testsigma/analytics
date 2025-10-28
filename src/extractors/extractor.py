@@ -39,8 +39,16 @@ class DataExtractor(BaseExtractor):
         
         # Initialize memory monitor
         from ..config import settings
+        # Calculate actual memory limit based on system RAM percentage
+        if settings.ENABLE_MEMORY_LIMIT:
+            import psutil
+            total_ram_mb = psutil.virtual_memory().total / (1024 * 1024)
+            memory_limit_mb = int(total_ram_mb * settings.MEMORY_LIMIT_PERCENT / 100)
+        else:
+            memory_limit_mb = None
+            
         self.memory_monitor = MemoryMonitor(
-            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            max_memory_mb=memory_limit_mb,
             enable_limit=settings.ENABLE_MEMORY_LIMIT
         )
         
@@ -113,9 +121,9 @@ class DataExtractor(BaseExtractor):
                 'master_mysql_connection_url': settings.MASTER_MYSQL_CONNECTION_URL,
                 'tenant_mysql_connection_url': settings.TENANT_MYSQL_CONNECTION_URL,
                 'extraction': {
-                    'workers': settings.EXTRACTION_WORKERS,
-                    'batch_size': settings.EXTRACTION_BATCH_SIZE,
-                    'db_workers': settings.EXTRACTION_DB_WORKERS
+                    'workers': settings.EXTRACTION_WORKERS,  # Now defaults to 1
+                    'batch_size': 5000,  # Smaller batch size for safety
+                    'db_workers': 1      # Single DB worker for safety
                 },
                 'output_dir': settings.EXTRACTED_OUTPUT_DIR,
                 'extract_tables': settings.EXTRACT_TABLES,
@@ -883,10 +891,12 @@ class DataExtractor(BaseExtractor):
                 if count > 0:
                     # Estimate memory needed (rough estimate: 1KB per row)
                     estimated_mb = count / 1000
-                    if self.memory_monitor.enable_limit and estimated_mb > self.config.get('max_memory_per_table_mb', 500):
+                    # Use 10% of total memory limit as max per table
+                    max_table_mb = self.memory_monitor.max_memory_mb * 0.1 if self.memory_monitor.max_memory_mb else 500
+                    if self.memory_monitor.enable_limit and estimated_mb > max_table_mb:
                         self.logger.warning(
                             f"Table {database}.{table} too large ({count:,} rows, ~{estimated_mb:.1f}MB), "
-                            f"exceeds MAX_MEMORY_PER_TABLE_MB={self.config.get('max_memory_per_table_mb', 500)}MB - sampling instead"
+                            f"exceeds 10% of memory limit ({max_table_mb:.0f}MB) - sampling instead"
                         )
                         # Extract only a sample for very large tables
                         table_data = self.extract_table_data(database, table, limit=10000)
@@ -915,12 +925,13 @@ class DataExtractor(BaseExtractor):
         
         return database_data
     
-    def extract_all_databases(self, table_names: Optional[List[str]] = None) -> str:
+    def extract_all_databases(self, table_names: Optional[List[str]] = None, etl_id: Optional[str] = None) -> str:
         """
         Extract from all databases into a single consolidated JSON file
         
         Args:
             table_names: Optional list of specific tables to extract from each database
+            etl_id: Optional ETL run ID for organizing output files
             
         Returns:
             Path to consolidated JSON file
@@ -961,67 +972,33 @@ class DataExtractor(BaseExtractor):
         consolidated_data = {}
         db_stats = {}
         
-        # Use parallel processing for databases when extracting many (much faster!)
-        if len(databases) > 5:
-            # Optimize database worker count to avoid connection pool exhaustion
-            # Too many concurrent database connections cause contention
-            configured_db_workers = self.config.get('extraction', {}).get('db_workers', 10)
-            if len(databases) <= 10:
-                max_db_workers = min(3, len(databases))  # Light parallelism for few DBs
-            elif len(databases) <= 20:
-                max_db_workers = 5  # Moderate parallelism
-            else:
-                max_db_workers = min(8, configured_db_workers)  # Cap at 8 for many DBs
+        # Initialize progress tracker if etl_id provided
+        from ..utils.progress_tracker import ProgressTracker
+        tracker = ProgressTracker(etl_id) if etl_id else None
+        
+        if tracker:
+            tracker.start_phase("Extraction", len(databases))
+        
+        # Sequential processing for safety (no parallelism)
+        for idx, database in enumerate(databases, 1):
+            self.logger.info(f"[{idx}/{len(databases)}] Extracting database: {database}")
             
-            # Progress tracking (log every 20%)
-            total_dbs = len(databases)
-            last_logged_pct = 0
-            
-            with ThreadPoolExecutor(max_workers=max_db_workers) as executor:
-                future_to_db = {
-                    executor.submit(self.extract_database_to_dict, db, table_names): db
-                    for db in databases
-                }
-                
-                completed = 0
-                total_records_so_far = 0
-                
-                for future in as_completed(future_to_db):
-                    database = future_to_db[future]
-                    completed += 1
+            try:
+                database_tables = self.extract_database_to_dict(database, table_names)
+                if database_tables:
+                    consolidated_data[database] = database_tables
+                    total_records = sum(t.get('records', 0) for t in database_tables.values())
+                    db_stats[database] = {'tables': len(database_tables), 'records': total_records}
+                    self.logger.info(f"  ✓ Extracted {len(database_tables)} tables, {total_records:,} records")
+                else:
+                    self.logger.info(f"  ✓ No data extracted (empty or no matching tables)")
                     
-                    try:
-                        database_tables = future.result()
-                        if database_tables:
-                            consolidated_data[database] = database_tables
-                            total_records = sum(t.get('records', 0) for t in database_tables.values())
-                            db_stats[database] = {'tables': len(database_tables), 'records': total_records}
-                            total_records_so_far += total_records
-                    except Exception as e:
-                        self.logger.error(f"[{completed}/{total_dbs}] Error in {database}: {e}")
+                # Update progress
+                if tracker:
+                    tracker.update_progress(1)
                     
-                    # Log every 20% or at completion
-                    current_pct = int((completed / total_dbs) * 100)
-                    if current_pct >= last_logged_pct + 20 or completed == total_dbs:
-                        elapsed = (dt.now() - extraction_start).total_seconds()
-                        remaining = (elapsed / completed) * (total_dbs - completed) if completed > 0 else 0
-                        self.logger.info(
-                            f"Progress: {current_pct}% ({completed}/{total_dbs} DBs) | "
-                            f"{total_records_so_far:,} records | "
-                            f"ETA: {remaining:.0f}s"
-                        )
-                        last_logged_pct = current_pct
-        else:
-            # Sequential for small number of databases (less overhead)
-            for idx, database in enumerate(databases, 1):
-                try:
-                    database_tables = self.extract_database_to_dict(database, table_names)
-                    if database_tables:
-                        consolidated_data[database] = database_tables
-                        total_records = sum(t.get('records', 0) for t in database_tables.values())
-                        db_stats[database] = {'tables': len(database_tables), 'records': total_records}
-                except Exception as e:
-                    self.logger.error(f"Failed to extract from database {database}: {e}")
+            except Exception as e:
+                self.logger.error(f"  ✗ Failed to extract {database}: {e}")
         
         # Log extraction summary
         extraction_end = dt.now()
@@ -1039,13 +1016,21 @@ class DataExtractor(BaseExtractor):
         self.logger.info(f"Speed: {total_records/duration if duration > 0 else 0:,.0f} records/sec")
         self.logger.info("=" * 60)
         
-        return self.save_consolidated_json(consolidated_data)
+        return self.save_consolidated_json(consolidated_data, etl_id)
     
-    def save_consolidated_json(self, consolidated_data: Dict) -> str:
+    def save_consolidated_json(self, consolidated_data: Dict, etl_id: Optional[str] = None) -> str:
         """Save consolidated data to a single JSON file with date filtering metadata"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create ETL-specific directory if etl_id is provided
+        if etl_id:
+            output_dir = os.path.join(self.config['output_dir'], etl_id)
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = self.config['output_dir']
+            
         filename = f"extracted_data_{timestamp}.json"
-        filepath = os.path.join(self.config['output_dir'], filename)
+        filepath = os.path.join(output_dir, filename)
         
         # Add date filtering metadata to consolidated data
         start_date, end_date = self._get_date_filter_params()

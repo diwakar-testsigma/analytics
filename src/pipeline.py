@@ -34,8 +34,9 @@ class Pipeline:
         self.logger = self._setup_logging()
         self.metrics = self._initialize_metrics()
         self.job_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.etl_id = self.job_id  # Use job_id as ETL ID for consistency
         self.logger.info(f"Initializing ETL Pipeline in {self.config.ENVIRONMENT} mode")
-        self.logger.info(f"Job ID: {self.job_id}")
+        self.logger.info(f"ETL Run ID: {self.etl_id}")
         if extraction_start_date:
             self.logger.info(f"Extraction start date override: {extraction_start_date}")
         
@@ -157,7 +158,7 @@ class Pipeline:
             
             # Extract from all configured databases
             self.logger.info("Initiating database extraction...")
-            extracted_file = extractor.extract_all_databases()
+            extracted_file = extractor.extract_all_databases(etl_id=self.etl_id)
             
             # Update metrics
             with open(extracted_file, 'r') as f:
@@ -237,7 +238,7 @@ class Pipeline:
             
             # Transform the data
             self.logger.info("Applying transformations based on Snowflake schema...")
-            transformed_file = transformer.transform_file(extracted_file)
+            transformed_file = transformer.transform_file(extracted_file, self.etl_id)
             
             # Update metrics
             with open(transformed_file, 'r') as f:

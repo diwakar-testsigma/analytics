@@ -36,7 +36,7 @@ class DataTransformer:
             self.config = {
                 'workers': settings.TRANSFORMATION_WORKERS,
                 'output_dir': settings.TRANSFORMED_OUTPUT_DIR,
-                'enable_concurrent': settings.ENABLE_CONCURRENT_PROCESSING
+                'enable_concurrent': True  # Always use concurrent processing
             }
         
         self.logger = logging.getLogger(__name__)
@@ -44,8 +44,16 @@ class DataTransformer:
         
         # Initialize memory monitor
         from ..config import settings
+        # Calculate actual memory limit based on system RAM percentage
+        if settings.ENABLE_MEMORY_LIMIT:
+            import psutil
+            total_ram_mb = psutil.virtual_memory().total / (1024 * 1024)
+            memory_limit_mb = int(total_ram_mb * settings.MEMORY_LIMIT_PERCENT / 100)
+        else:
+            memory_limit_mb = None
+            
         self.memory_monitor = MemoryMonitor(
-            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            max_memory_mb=memory_limit_mb,
             enable_limit=settings.ENABLE_MEMORY_LIMIT
         )
         
@@ -372,12 +380,13 @@ class DataTransformer:
         # If no specific join pattern, return the first record (simple approach)
         return related_data[0] if related_data else None
     
-    def transform_file(self, filepath: str) -> str:
+    def transform_file(self, filepath: str, etl_id: Optional[str] = None) -> str:
         """
         Transform data from an extracted file using streaming to handle large files
         
         Args:
             filepath: Path to extracted data file
+            etl_id: Optional ETL run ID for organizing output files
             
         Returns:
             Path to transformed data file
@@ -392,7 +401,7 @@ class DataTransformer:
         # For very large files, use streaming approach
         if file_size_mb > 100:  # If file is larger than 100MB
             self.logger.info("Large file detected - using streaming transformation")
-            return self._transform_file_streaming(filepath)
+            return self._transform_file_streaming(filepath, etl_id)
         
         # For smaller files, use the original approach
         with open(filepath, 'r') as f:
@@ -443,8 +452,16 @@ class DataTransformer:
         
         # Save transformed data
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create ETL-specific directory if etl_id is provided
+        if etl_id:
+            output_dir = os.path.join(self.config['output_dir'], etl_id)
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = self.config['output_dir']
+            
         output_filename = f"snowflake_data_{timestamp}.json"
-        output_path = os.path.join(self.config['output_dir'], output_filename)
+        output_path = os.path.join(output_dir, output_filename)
         
         with open(output_path, 'w') as f:
             json.dump(output_data, f, indent=2, default=str, ensure_ascii=False)
@@ -571,27 +588,244 @@ class DataTransformer:
         
         return result
     
-    def _transform_file_streaming(self, filepath: str) -> str:
+    def _transform_file_streaming(self, filepath: str, etl_id: Optional[str] = None) -> str:
         """
         Transform a large file using streaming to avoid memory issues
         
         This method processes the JSON file database by database without loading
-        the entire file into memory.
+        the entire file into memory using ijson for efficient parsing.
         
         Args:
             filepath: Path to large extracted data file
+            etl_id: Optional ETL run ID for organizing output files
             
         Returns:
             Path to transformed data file
         """
         import gc
+        try:
+            import ijson
+        except ImportError:
+            self.logger.warning("ijson not available, using fallback streaming method")
+            return self._transform_file_streaming_fallback(filepath, etl_id)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create ETL-specific directory if etl_id is provided
+        if etl_id:
+            output_dir = os.path.join(self.config['output_dir'], etl_id)
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = self.config['output_dir']
+            
         output_filename = f"snowflake_data_{timestamp}.json"
-        output_path = os.path.join(self.config['output_dir'], output_filename)
+        output_path = os.path.join(output_dir, output_filename)
+        
+        # Initialize progress tracking
+        from ..utils.progress_tracker import ProgressTracker
+        tracker = ProgressTracker(etl_id) if etl_id else None
+        
+        # First pass: count databases for progress tracking
+        self.logger.info("Analyzing file structure...")
+        database_count = 0
+        with open(filepath, 'rb') as f:
+            parser = ijson.parse(f)
+            for prefix, event, value in parser:
+                if event == 'map_key' and not prefix:
+                    # Top-level key (database name)
+                    if value != 'extraction_metadata' and not value.startswith('_'):
+                        database_count += 1
+        
+        self.logger.info(f"Found {database_count} databases to process")
+        
+        if tracker:
+            tracker.start_phase("Transformation", database_count)
+        
+        # Initialize output file
+        with open(output_path, 'w') as out_f:
+            out_f.write('{\n')
+            out_f.write(f'  "etl_timestamp": "{datetime.now().isoformat()}",\n')
+            out_f.write('  "tables": {\n')
+        
+        # Use compressed output for better performance
+        import gzip
+        use_compression = True
+        if use_compression:
+            output_path = output_path.replace('.json', '.json.gz')
+            self.logger.info(f"Using gzip compression for output: {output_path}")
+        
+        # Create temporary files for each table to avoid memory buildup
+        import tempfile
+        temp_dir = tempfile.mkdtemp(prefix='etl_transform_')
+        self.logger.info(f"Using temporary directory: {temp_dir}")
+        
+        # Track which tables have data
+        tables_with_data = set()
+        temp_files = {}
+        
+        # Second pass: process each database and write immediately
+        processed_databases = 0
+        total_records = 0
+        
+        with open(filepath, 'rb') as f:
+            parser = ijson.parse(f)
+            current_database = None
+            current_table = None
+            database_data = {}
+            
+            for prefix, event, value in parser:
+                if event == 'map_key' and not prefix:
+                    # Top-level key (database name)
+                    if value != 'extraction_metadata' and not value.startswith('_'):
+                        # Process previous database if exists
+                        if current_database and database_data:
+                            self.logger.info(f"[{processed_databases+1}/{database_count}] Processing {current_database}")
+                            
+                            # Check memory
+                            self.memory_monitor.check_memory(f"before transforming {current_database}")
+                            
+                            # Transform the database data
+                            transformed_data = self.transform_database_data(current_database, database_data)
+                            
+                            # Write transformed data to temporary files immediately
+                            for table, records in transformed_data.items():
+                                if records:
+                                    if table not in temp_files:
+                                        # Create new temp file for this table
+                                        temp_file = os.path.join(temp_dir, f"{table}.jsonl")
+                                        temp_files[table] = temp_file
+                                        tables_with_data.add(table)
+                                    
+                                    # Append records to temp file (JSONL format for streaming)
+                                    with open(temp_files[table], 'a') as tf:
+                                        for record in records:
+                                            json.dump(record, tf, default=str, ensure_ascii=False)
+                                            tf.write('\n')
+                                    
+                                    total_records += len(records)
+                            
+                            # Free memory immediately
+                            database_data.clear()
+                            del transformed_data
+                            gc.collect()
+                            
+                            processed_databases += 1
+                            if tracker:
+                                tracker.update_progress(1)
+                            
+                            self.memory_monitor.log_memory_status(f"After transforming {current_database}")
+                        
+                        # Start new database
+                        current_database = value
+                        database_data = {}
+                
+                elif event == 'map_key' and prefix == current_database:
+                    # Table name within database
+                    current_table = value
+                    database_data[current_table] = []
+                
+                elif prefix and prefix.startswith(f"{current_database}.{current_table}.item") and event not in ('start_map', 'end_map', 'start_array', 'end_array'):
+                    # Accumulate the record
+                    if prefix.endswith('.item'):
+                        database_data[current_table].append(value)
+        
+        # Process last database
+        if current_database and database_data:
+            self.logger.info(f"[{processed_databases+1}/{database_count}] Processing {current_database}")
+            transformed_data = self.transform_database_data(current_database, database_data)
+            for table, records in transformed_data.items():
+                if records:
+                    if table not in temp_files:
+                        temp_file = os.path.join(temp_dir, f"{table}.jsonl")
+                        temp_files[table] = temp_file
+                        tables_with_data.add(table)
+                    
+                    with open(temp_files[table], 'a') as tf:
+                        for record in records:
+                            json.dump(record, tf, default=str, ensure_ascii=False)
+                            tf.write('\n')
+                    
+                    total_records += len(records)
+            
+            processed_databases += 1
+            if tracker:
+                tracker.update_progress(1)
+        
+        # Now combine temp files into final output file
+        self.logger.info("Combining transformed data into final output file...")
+        
+        # Open output file (compressed or not)
+        if use_compression:
+            out_f = gzip.open(output_path, 'wt', encoding='utf-8')
+        else:
+            out_f = open(output_path, 'w')
+        
+        try:
+            # Write header
+            out_f.write('{\n')
+            out_f.write(f'  "etl_timestamp": "{datetime.now().isoformat()}",\n')
+            out_f.write('  "tables": {\n')
+            
+            # Write each table's data from temp files
+            table_count = 0
+            for table in sorted(tables_with_data):
+                if table_count > 0:
+                    out_f.write(',\n')
+                
+                out_f.write(f'    "{table}": [\n')
+                
+                # Read from temp file and write to output
+                temp_file = temp_files[table]
+                first_record = True
+                
+                with open(temp_file, 'r') as tf:
+                    for line in tf:
+                        if line.strip():
+                            if not first_record:
+                                out_f.write(',\n')
+                            out_f.write('      ')
+                            out_f.write(line.strip())
+                            first_record = False
+                
+                out_f.write('\n    ]')
+                table_count += 1
+                
+                # Delete temp file immediately to free disk space
+                os.remove(temp_file)
+            
+            out_f.write('\n  }\n}')
+        finally:
+            out_f.close()
+            
+        # Clean up temp directory
+        try:
+            os.rmdir(temp_dir)
+        except:
+            pass
+        
+        self.logger.info(f"Transformation complete: {total_records} records in {table_count} tables")
+        self.logger.info(f"Output file: {output_path}")
+        
+        return output_path
+    
+    def _transform_file_streaming_fallback(self, filepath: str, etl_id: Optional[str] = None) -> str:
+        """
+        Fallback streaming method when ijson is not available
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Create ETL-specific directory if etl_id is provided
+        if etl_id:
+            output_dir = os.path.join(self.config['output_dir'], etl_id)
+            os.makedirs(output_dir, exist_ok=True)
+        else:
+            output_dir = self.config['output_dir']
+            
+        output_filename = f"snowflake_data_{timestamp}.json"
+        output_path = os.path.join(output_dir, output_filename)
         
         # First, extract just the structure to understand the file
-        self.logger.info("Analyzing file structure...")
+        self.logger.info("Analyzing file structure (using fallback method)...")
         databases = []
         with open(filepath, 'r') as f:
             # Read first character to check if it's a JSON object

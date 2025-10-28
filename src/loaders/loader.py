@@ -30,8 +30,16 @@ class DataLoader(BaseLoader):
         super().__init__()
         
         # Initialize memory monitor
+        # Calculate actual memory limit based on system RAM percentage
+        if settings.ENABLE_MEMORY_LIMIT:
+            import psutil
+            total_ram_mb = psutil.virtual_memory().total / (1024 * 1024)
+            memory_limit_mb = int(total_ram_mb * settings.MEMORY_LIMIT_PERCENT / 100)
+        else:
+            memory_limit_mb = None
+            
         self.memory_monitor = MemoryMonitor(
-            max_memory_mb=settings.MAX_MEMORY_USAGE * 10 if settings.ENABLE_MEMORY_LIMIT else None,
+            max_memory_mb=memory_limit_mb,
             enable_limit=settings.ENABLE_MEMORY_LIMIT
         )
         
@@ -42,7 +50,7 @@ class DataLoader(BaseLoader):
         base_config = {
             'log_level': self.settings.LOG_LEVEL or 'INFO',
             'data_store': self.data_store,
-            'batch_size': self.settings.BATCH_SIZE
+            'batch_size': 5000  # Fixed optimal batch size
         }
         
         if self.data_store == 'sqlite':
@@ -51,7 +59,7 @@ class DataLoader(BaseLoader):
                 **base_config,
                 'sqlite': {
                     'connection_url': self.settings.SQLITE_CONNECTION_URL,
-                    'batch_size': self.settings.BATCH_SIZE
+                    'batch_size': 5000  # Fixed optimal batch size
                 }
             }
         else:
@@ -60,7 +68,7 @@ class DataLoader(BaseLoader):
                 **base_config,
                 'snowflake': {
                     'connection_url': self.settings.SNOWFLAKE_CONNECTION_URL,
-                    'batch_size': self.settings.BATCH_SIZE
+                    'batch_size': 5000  # Fixed optimal batch size
                 }
             }
     
@@ -89,23 +97,30 @@ class DataLoader(BaseLoader):
         Load transformed data from JSON file into the configured data store
         
         Args:
-            filepath: Path to the transformed JSON file
+            filepath: Path to the transformed JSON file (supports .gz compressed files)
             
         Returns:
             bool: True if successful, False otherwise
         """
+        import gzip
+        
         try:
             self.logger.info(f"Starting data load process")
             self.logger.info(f"Source file: {filepath}")
             self.logger.info(f"Target: {self.data_store.upper()}")
             
+            # Check if file is compressed
+            is_compressed = filepath.endswith('.gz')
+            if is_compressed:
+                self.logger.info("Detected compressed file (.gz)")
+            
             # Check file size
             file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
             self.logger.info(f"File size: {file_size_mb:.2f} MB")
             
-            # For large files, use streaming approach
-            if file_size_mb > 50:  # 50MB threshold for loading
-                self.logger.info("Large file detected - using streaming loader")
+            # For large files or compressed files, use streaming approach
+            if file_size_mb > 50 or is_compressed:  # 50MB threshold for loading
+                self.logger.info("Using streaming loader")
                 return self._load_streaming(filepath)
             
             # For smaller files, use original approach
@@ -153,7 +168,7 @@ class DataLoader(BaseLoader):
                         data_source.create_table_if_not_exists(table_name, records[0])
                         
                         # Insert data in batches
-                        batch_size = self.settings.BATCH_SIZE
+                        batch_size = 5000  # Fixed optimal batch size
                         self.logger.debug(f"Inserting data in batches of {batch_size}...")
                         
                         success = data_source.insert_batch(table_name, records)
@@ -253,7 +268,7 @@ class DataLoader(BaseLoader):
         Load data using streaming approach for large files
         
         This method processes the JSON file table by table without loading
-        the entire file into memory.
+        the entire file into memory, using ijson for efficient parsing.
         
         Args:
             filepath: Path to the transformed JSON file
@@ -263,6 +278,13 @@ class DataLoader(BaseLoader):
         """
         import gc
         import json
+        import os
+        try:
+            import ijson
+            has_ijson = True
+        except ImportError:
+            self.logger.info("ijson not available, using standard JSON streaming")
+            has_ijson = False
         
         try:
             # Get data source and connect
@@ -281,6 +303,14 @@ class DataLoader(BaseLoader):
             self.logger.info("Analyzing file structure...")
             table_names = self._extract_table_names(filepath)
             self.logger.info(f"Found {len(table_names)} tables to load")
+            
+            # Initialize progress tracker
+            from ..utils.progress_tracker import ProgressTracker
+            etl_id = os.path.basename(os.path.dirname(filepath)) if '/' in filepath else None
+            tracker = ProgressTracker(etl_id) if etl_id else None
+            
+            if tracker:
+                tracker.start_phase("Loading", len(table_names))
             
             # Process each table one by one
             for idx, table_name in enumerate(table_names):
@@ -323,9 +353,17 @@ class DataLoader(BaseLoader):
                     # Log memory status
                     self.memory_monitor.log_memory_status(f"After loading {table_name}")
                     
+                    # Update progress
+                    if tracker:
+                        tracker.update_progress(1)
+                    
                 except Exception as e:
                     self.logger.error(f"Error loading table '{table_name}': {str(e)}")
                     failed_tables.append(table_name)
+                    
+                    # Update progress even on failure
+                    if tracker:
+                        tracker.update_progress(1)
             
             # Disconnect
             self.logger.debug("Closing database connection...")
@@ -369,10 +407,19 @@ class DataLoader(BaseLoader):
     def _extract_table_names(self, filepath: str) -> List[str]:
         """
         Extract table names from the JSON file without loading the entire file
+        Supports both regular and gzip-compressed files
         """
+        import gzip
+        
         table_names = []
         
-        with open(filepath, 'r') as f:
+        # Open file based on type
+        if filepath.endswith('.gz'):
+            f = gzip.open(filepath, 'rt', encoding='utf-8')
+        else:
+            f = open(filepath, 'r')
+        
+        try:
             # Use a simple state machine to find table names
             in_tables_section = False
             in_string = False
@@ -405,20 +452,33 @@ class DataLoader(BaseLoader):
                     depth -= 1
                     if in_tables_section and depth == 0:
                         break  # We've finished the tables section
+        finally:
+            f.close()
         
         return table_names
     
     def _extract_single_table(self, filepath: str, table_name: str) -> List[Dict]:
         """
         Extract a single table's data from the JSON file using ijson for streaming
+        Supports both regular and gzip-compressed files
         """
+        import gzip
+        
         try:
             # Try to use ijson for efficient streaming if available
             import ijson
             
-            with open(filepath, 'rb') as f:
+            # Open file based on type
+            if filepath.endswith('.gz'):
+                f = gzip.open(filepath, 'rb')
+            else:
+                f = open(filepath, 'rb')
+            
+            try:
                 parser = ijson.items(f, f'tables.{table_name}.item')
                 return list(parser)
+            finally:
+                f.close()
                 
         except ImportError:
             # Fallback to manual parsing if ijson not available
@@ -428,11 +488,18 @@ class DataLoader(BaseLoader):
     def _extract_single_table_fallback(self, filepath: str, table_name: str) -> List[Dict]:
         """
         Fallback method to extract table data without ijson
+        Supports both regular and gzip-compressed files
         """
         import json
+        import gzip
         
-        # This is less efficient but still better than loading the entire file
-        with open(filepath, 'r') as f:
+        # Open file based on type
+        if filepath.endswith('.gz'):
+            f = gzip.open(filepath, 'rt', encoding='utf-8')
+        else:
+            f = open(filepath, 'r')
+        
+        try:
             # Read file in chunks and look for our table
             buffer = ""
             found_table = False
@@ -474,6 +541,8 @@ class DataLoader(BaseLoader):
                 # Keep only last part of buffer
                 if len(buffer) > 100000:
                     buffer = buffer[-10000:]
+        finally:
+            f.close()
         
         return []
     

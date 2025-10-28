@@ -32,9 +32,7 @@ class Settings:
     # Data Store Configuration
     DATA_STORE: str = os.getenv('DATA_STORE')
     
-    # ETL Configuration
-    BATCH_SIZE: int = int(os.getenv('BATCH_SIZE'))
-    PARALLEL_WORKERS: int = int(os.getenv('PARALLEL_WORKERS'))
+    # Logging Configuration
     LOG_LEVEL: str = os.getenv('LOG_LEVEL')
     
     # Directory Configuration
@@ -43,64 +41,27 @@ class Settings:
     TRANSFORMED_OUTPUT_DIR: str = os.getenv('TRANSFORMED_OUTPUT_DIR')
     
     # Extraction Configuration
-    EXTRACTION_WORKERS: int = int(os.getenv('EXTRACTION_WORKERS'))
-    EXTRACTION_BATCH_SIZE: int = int(os.getenv('EXTRACTION_BATCH_SIZE'))
-    EXTRACTION_DB_WORKERS: int = int(os.getenv('EXTRACTION_DB_WORKERS'))
-    EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')
+    EXTRACT_TABLES: str = os.getenv('EXTRACT_TABLES')  # Comma-separated list of tables
     EXTRACT_DB_KEYWORDS: str = os.getenv('EXTRACT_DB_KEYWORDS')
     EXTRACT_DB_EXCLUDE_KEYWORDS: str = os.getenv('EXTRACT_DB_EXCLUDE_KEYWORDS')
     
-    # Connection Pool Configuration (NEW)
-    MAX_CONNECTIONS_PER_THREAD: int = int(os.getenv('MAX_CONNECTIONS_PER_THREAD', '1'))
-    GLOBAL_CONNECTION_LIMIT: int = int(os.getenv('GLOBAL_CONNECTION_LIMIT', '20'))
-    
-    # Query Configuration (NEW)
-    QUERY_TIMEOUT: int = int(os.getenv('QUERY_TIMEOUT', '300'))  # 5 minutes default
-    
-    # Memory Management Configuration (NEW)
+    # Memory Protection (IMPORTANT - prevents EC2 crashes)
     ENABLE_MEMORY_LIMIT: bool = os.getenv('ENABLE_MEMORY_LIMIT', 'false').lower() == 'true'
-    MAX_MEMORY_PER_TABLE_MB: int = int(os.getenv('MAX_MEMORY_PER_TABLE_MB', '500'))
-    
-    # Date Filtering Configuration (strip inline comments)
-    EXTRACT_DATE: str = (os.getenv('EXTRACT_DATE') or '').split('#')[0].strip()
-    EXTRACT_DIRECTION: str = (os.getenv('EXTRACT_DIRECTION') or '').split('#')[0].strip()
-    EXTRACT_DAYS_COUNT: str = (os.getenv('EXTRACT_DAYS_COUNT') or '').split('#')[0].strip()
-    EXTRACT_HOURS_COUNT: str = (os.getenv('EXTRACT_HOURS_COUNT') or '').split('#')[0].strip()
+    MEMORY_LIMIT_PERCENT: int = int(os.getenv('MEMORY_LIMIT_PERCENT', '50'))  # % of system RAM
     
     # Skip Configuration
     SKIP_EXTRACTION: bool = (os.getenv('SKIP_EXTRACTION') or '').lower() == 'true'
     
-    # Transformation Configuration
-    TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS'))
-    TRANSFORMATION_BATCH_SIZE: int = int(os.getenv('TRANSFORMATION_BATCH_SIZE'))
-    TRANSFORMATION_TIMEOUT: int = int(os.getenv('TRANSFORMATION_TIMEOUT'))
+    # Database Connection
+    CONNECTION_TIMEOUT: int = int(os.getenv('CONNECTION_TIMEOUT', '30'))
     
-    # Database Connection Configuration
-    CONNECTION_TIMEOUT: int = int(os.getenv('CONNECTION_TIMEOUT'))
-    CONNECTION_RETRY_COUNT: int = int(os.getenv('CONNECTION_RETRY_COUNT'))
-    CONNECTION_RETRY_DELAY: int = int(os.getenv('CONNECTION_RETRY_DELAY'))
+    # Workers (reduced for safety)
+    EXTRACTION_WORKERS: int = int(os.getenv('EXTRACTION_WORKERS', '1'))  # Single threaded for safety
+    TRANSFORMATION_WORKERS: int = int(os.getenv('TRANSFORMATION_WORKERS', '1'))  # Single threaded for safety
     
-    # Performance Configuration
-    MAX_MEMORY_USAGE: int = int(os.getenv('MAX_MEMORY_USAGE'))
-    CLEANUP_TEMP_FILES: bool = os.getenv('CLEANUP_TEMP_FILES').lower() == 'true'
-    ENABLE_CONCURRENT_PROCESSING: bool = os.getenv('ENABLE_CONCURRENT_PROCESSING').lower() == 'true'
-    
-    # Snowflake Optimization Configuration
-    SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD'))
-    
-    # Loading Strategy Configuration
-    LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY')
-    
-    # Notification Configuration
-    ENABLE_NOTIFICATIONS: bool = os.getenv('ENABLE_NOTIFICATIONS').lower() == 'true'
-    SLACK_WEBHOOK_URL: str = os.getenv('SLACK_WEBHOOK_URL')
-    NOTIFICATION_ON_SUCCESS: bool = os.getenv('NOTIFICATION_ON_SUCCESS').lower() == 'true'
-    NOTIFICATION_ON_FAILURE: bool = os.getenv('NOTIFICATION_ON_FAILURE').lower() == 'true'
-    NOTIFICATION_ON_PARTIAL: bool = os.getenv('NOTIFICATION_ON_PARTIAL').lower() == 'true'
-    
-    # Scheduling Configuration
-    ETL_SCHEDULE_CRON: str = os.getenv('ETL_SCHEDULE_CRON')
-    RUN_ON_STARTUP: bool = os.getenv('RUN_ON_STARTUP').lower() == 'true'
+    # Snowflake Settings
+    SNOWFLAKE_COPY_THRESHOLD: int = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '10000'))
+    LOAD_STRATEGY: str = os.getenv('LOAD_STRATEGY', 'bulk')
     
     # Derived paths
     EXTRACTED_OUTPUT_DIR: str = os.path.join(os.getenv('OUTPUT_DIR'), 'extracted')
