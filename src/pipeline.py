@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
-from src.transformers.transformer_v2_streaming import StreamingTransformerV2
+from src.transformers.simple_streaming import SimpleStreaming
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags
@@ -233,15 +233,15 @@ class Pipeline:
             self.logger.info(f"Input file: {extracted_file}")
             self.logger.info("Loading transformation mappings...")
             
-            # Use streaming V2 transformer - true streaming, no memory buildup
-            self.logger.info("Using Streaming Transformer V2 (ultra-low memory)...")
-            transformer = StreamingTransformerV2(
+            # Use simple streaming - one record at a time, NO accumulation
+            self.logger.info("Using Simple Streaming (zero accumulation)...")
+            transformer = SimpleStreaming(
                 output_dir=settings.TRANSFORMED_OUTPUT_DIR
             )
             
             # Transform the data
             self.logger.info("Applying transformations based on Snowflake schema...")
-            transformed_file = transformer.transform_file(extracted_file)
+            transformed_file = transformer.transform(extracted_file)
             
             # Update metrics
             # Handle both compressed and uncompressed files
