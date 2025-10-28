@@ -7,13 +7,15 @@ for analytics data from MySQL to Snowflake/SQLite.
 
 import json
 import logging
+import gzip
+import ijson
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
-from src.transformers.simple_streaming import SimpleStreaming
+from src.transformers.transformer import DataTransformer
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags
@@ -119,16 +121,10 @@ class Pipeline:
             latest_file = max(extracted_files, key=lambda p: p.stat().st_mtime)
             self.logger.info(f"Using existing extracted file: {latest_file}")
             
-            # Update metrics
-            with open(latest_file, 'r') as f:
-                data = json.load(f)
-                for db_name, db_data in data.items():
-                    if db_name == 'extraction_metadata':
-                        continue
-                    for table_name, table_info in db_data.items():
-                        if isinstance(table_info, dict) and 'records' in table_info:
-                            self.metrics['extraction']['records_extracted'] += table_info['records']
-                            self.metrics['extraction']['tables_extracted'].append(f"{db_name}.{table_name}")
+            # Update metrics without loading entire file
+            table_counts, total_records = self._get_file_metrics_streaming(str(latest_file))
+            self.metrics['extraction']['records_extracted'] = total_records
+            self.metrics['extraction']['tables_extracted'] = list(table_counts.keys())
             
             return str(latest_file)
         
@@ -159,32 +155,24 @@ class Pipeline:
             self.logger.info("Initiating database extraction...")
             extracted_file = extractor.extract_all_databases()
             
-            # Update metrics
-            with open(extracted_file, 'r') as f:
-                data = json.load(f)
-                total_databases = len(data)
-                
-                self.logger.info(f"Successfully extracted data from {total_databases} databases")
-                
-            for database, tables in data.items():
-                # Skip metadata sections
-                if database == 'extraction_metadata':
-                    continue
-                    
-                db_records = 0
-                db_tables = len(tables)
-                
-                for table, table_data in tables.items():
-                    # Skip if table_data is not a dictionary
-                    if not isinstance(table_data, dict):
-                        continue
-                        
-                    record_count = table_data.get('records', 0)
-                    db_records += record_count
-                    self.metrics['extraction']['records_extracted'] += record_count
-                    self.metrics['extraction']['tables_extracted'].append(f"{database}.{table}")
-                
-                self.logger.info(f"  - Database '{database}': {db_tables} tables, {db_records:,} records")
+            # Update metrics without loading entire file
+            table_counts, total_records = self._get_file_metrics_streaming(extracted_file)
+            self.metrics['extraction']['records_extracted'] = total_records
+            self.metrics['extraction']['tables_extracted'] = list(table_counts.keys())
+            
+            # Count databases
+            databases = {}
+            for table_key in table_counts.keys():
+                db_name = table_key.split('.')[0]
+                if db_name not in databases:
+                    databases[db_name] = {'tables': 0, 'records': 0}
+                databases[db_name]['tables'] += 1
+                databases[db_name]['records'] += table_counts[table_key]
+            
+            self.logger.info(f"Successfully extracted data from {len(databases)} databases")
+            
+            for db_name, db_stats in databases.items():
+                self.logger.info(f"  - Database '{db_name}': {db_stats['tables']} tables, {db_stats['records']:,} records")
             
             extraction_time = (datetime.now() - extraction_start).total_seconds()
             
@@ -233,31 +221,22 @@ class Pipeline:
             self.logger.info(f"Input file: {extracted_file}")
             self.logger.info("Loading transformation mappings...")
             
-            # Use simple streaming - one record at a time, NO accumulation
-            self.logger.info("Using Simple Streaming (zero accumulation)...")
-            transformer = SimpleStreaming(
-                output_dir=settings.TRANSFORMED_OUTPUT_DIR
-            )
+            # Use event-based streaming transformer
+            self.logger.info("Using event-based streaming transformer...")
+            transformer = DataTransformer({
+                'output_dir': settings.TRANSFORMED_OUTPUT_DIR
+            })
             
             # Transform the data
             self.logger.info("Applying transformations based on Snowflake schema...")
-            transformed_file = transformer.transform(extracted_file)
+            transformed_file = transformer.transform_file(extracted_file)
             
-            # Update metrics
-            # Handle both compressed and uncompressed files
-            if transformed_file.endswith('.gz'):
-                import gzip
-                with gzip.open(transformed_file, 'rt') as f:
-                    data = json.load(f)
-            else:
-                with open(transformed_file, 'r') as f:
-                    data = json.load(f)
-            tables = data.get('tables', {})
+            # Update metrics without loading entire file
+            table_counts, total_records = self._get_file_metrics_streaming(transformed_file)
             
-            self.logger.info(f"Successfully transformed {len(tables)} tables:")
+            self.logger.info(f"Successfully transformed {len(table_counts)} tables:")
             
-            for table_name, records in tables.items():
-                record_count = len(records)
+            for table_name, record_count in table_counts.items():
                 self.metrics['transformation']['records_transformed'] += record_count
                 self.metrics['transformation']['tables_transformed'].append(table_name)
                 self.logger.info(f"  - {table_name}: {record_count:,} records")
@@ -320,15 +299,10 @@ class Pipeline:
             if isinstance(result, bool):
                 success = result
                 if success:
-                    # Old behavior - update from file
-                    with open(transformed_file, 'r') as f:
-                        data = json.load(f)
-                        tables = data.get('tables', {})
-                        
-                        for table_name, records in tables.items():
-                            record_count = len(records)
-                            self.metrics['loading']['records_loaded'] += record_count
-                            self.metrics['loading']['tables_loaded'].append(table_name)
+                    # Old behavior - update from file metrics without loading it
+                    table_counts, total_records = self._get_file_metrics_streaming(transformed_file)
+                    self.metrics['loading']['records_loaded'] = total_records
+                    self.metrics['loading']['tables_loaded'] = list(table_counts.keys())
             else:
                 # New behavior - use detailed result
                 success = result['success']
@@ -485,12 +459,26 @@ class Pipeline:
         notifier.notify_etl_started(self.job_id)
         
         try:
-            # Check if file needs transformation or can be loaded directly
-            with open(source_file, 'r') as f:
-                data = json.load(f)
+            # Check if file needs transformation by peeking at structure
+            is_transformed = False
+            
+            if source_file.endswith('.gz'):
+                f = gzip.open(source_file, 'rb')
+            else:
+                f = open(source_file, 'rb')
+            
+            with f:
+                # Just check first few events to see if it has 'tables' key
+                parser = ijson.parse(f)
+                for i, (prefix, event, value) in enumerate(parser):
+                    if event == 'map_key' and prefix == '' and value == 'tables':
+                        is_transformed = True
+                        break
+                    if i > 10:  # Don't check too many events
+                        break
             
             # If file has 'tables' key, it's already transformed
-            if 'tables' in data:
+            if is_transformed:
                 transformed_file = source_file
                 self.metrics['transformation']['success'] = True
             else:
@@ -544,6 +532,95 @@ class Pipeline:
             notifier.notify_etl_completed(self.job_id, self.metrics)
             
             return False
+    
+    def _get_file_metrics_streaming(self, filepath: str) -> Tuple[Dict[str, int], int]:
+        """Get file metrics without loading entire file into memory
+        
+        Returns:
+            Tuple of (table_counts, total_records)
+        """
+        table_counts = {}
+        total_records = 0
+        
+        try:
+            # Check if file has extraction or transformation structure
+            if filepath.endswith('.gz'):
+                f = gzip.open(filepath, 'rb')
+            else:
+                f = open(filepath, 'rb')
+            
+            with f:
+                parser = ijson.parse(f)
+                
+                # Detect file type by looking for 'tables' key
+                for prefix, event, value in parser:
+                    if event == 'map_key' and prefix == '' and value == 'tables':
+                        # Transformed file structure
+                        return self._count_transformed_records(filepath)
+                    elif event == 'map_key' and prefix == '' and value != 'extraction_metadata':
+                        # Extracted file structure
+                        return self._count_extracted_records(filepath)
+            
+        except Exception as e:
+            self.logger.warning(f"Could not get metrics for {filepath}: {e}")
+        
+        return table_counts, total_records
+    
+    def _count_extracted_records(self, filepath: str) -> Tuple[Dict[str, int], int]:
+        """Count records in extracted file format"""
+        table_counts = {}
+        total_records = 0
+        
+        if filepath.endswith('.gz'):
+            f = gzip.open(filepath, 'rb')
+        else:
+            f = open(filepath, 'rb')
+        
+        with f:
+            parser = ijson.parse(f)
+            for prefix, event, value in parser:
+                # Look for "records" field at database.table.records
+                if event == 'number' and prefix.endswith('.records'):
+                    parts = prefix.split('.')
+                    if len(parts) >= 3:  # database.table.records
+                        table_key = f"{parts[0]}.{parts[1]}"
+                        table_counts[table_key] = value
+                        total_records += value
+        
+        return table_counts, total_records
+    
+    def _count_transformed_records(self, filepath: str) -> Tuple[Dict[str, int], int]:
+        """Count records in transformed file by streaming array lengths"""
+        table_counts = {}
+        total_records = 0
+        current_table = None
+        current_count = 0
+        
+        if filepath.endswith('.gz'):
+            f = gzip.open(filepath, 'rb')
+        else:
+            f = open(filepath, 'rb')
+        
+        with f:
+            parser = ijson.parse(f)
+            for prefix, event, value in parser:
+                # Track current table
+                if event == 'map_key' and prefix == 'tables':
+                    if current_table and current_count > 0:
+                        table_counts[current_table] = current_count
+                        total_records += current_count
+                    current_table = value
+                    current_count = 0
+                # Count items in array
+                elif event == 'start_map' and current_table and prefix == f'tables.{current_table}.item':
+                    current_count += 1
+            
+            # Don't forget last table
+            if current_table and current_count > 0:
+                table_counts[current_table] = current_count
+                total_records += current_count
+        
+        return table_counts, total_records
     
     def _save_metrics(self):
         """Save pipeline metrics to file"""
