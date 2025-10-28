@@ -9,10 +9,13 @@ transformation mappings.
 import json
 import os
 import math
+import gc
+import gzip
+import ijson
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Iterator, Tuple, IO
 import logging
 from .transformation_mapping import ALL_MAPPINGS, get_source_tables, get_column_mappings, list_all_tables
 
@@ -34,14 +37,91 @@ class DataTransformer:
             self.config = {
                 'workers': settings.TRANSFORMATION_WORKERS,
                 'output_dir': settings.TRANSFORMED_OUTPUT_DIR,
-                'enable_concurrent': settings.ENABLE_CONCURRENT_PROCESSING
+                'enable_concurrent': settings.ENABLE_CONCURRENT_PROCESSING,
+                'batch_size': getattr(settings, 'TRANSFORMATION_BATCH_SIZE', 100),
+                'enable_compression': getattr(settings, 'ENABLE_COMPRESSION', True)
             }
         
         self.logger = logging.getLogger(__name__)
-        self.target_tables = list_all_tables()
+        
+        # Build reverse mapping for efficiency: source_table -> target_tables
+        self.source_to_targets = {}
+        for target_table, mapping in ALL_MAPPINGS.items():
+            for source_table in mapping.get('source_tables', []):
+                if source_table not in self.source_to_targets:
+                    self.source_to_targets[source_table] = []
+                self.source_to_targets[source_table].append({
+                    'target': target_table,
+                    'columns': mapping.get('column_mappings', {})
+                })
         
         # Ensure output directory exists
         os.makedirs(self.config['output_dir'], exist_ok=True)
+        
+        # Streaming settings
+        self.batch_size = self.config.get('batch_size', 100)
+        self.enable_compression = self.config.get('enable_compression', True)
+    
+    def _open_file(self, filepath: str, mode: str = 'r') -> IO:
+        """
+        Open file with automatic compression detection
+        
+        Args:
+            filepath: Path to file
+            mode: Open mode ('r' for read, 'w' for write)
+            
+        Returns:
+            File handle
+        """
+        if filepath.endswith('.gz'):
+            if 'b' not in mode:
+                mode = mode.replace('r', 'rt').replace('w', 'wt')
+            return gzip.open(filepath, mode, encoding='utf-8' if 't' in mode else None)
+        else:
+            return open(filepath, mode, encoding='utf-8' if 'b' not in mode else None)
+    
+    def _stream_records(self, filepath: str) -> Iterator[Tuple[str, str, Dict]]:
+        """
+        Stream records from file yielding (database, table, record) tuples
+        
+        Args:
+            filepath: Path to extracted data file
+            
+        Yields:
+            Tuples of (database_name, table_name, record)
+        """
+        with self._open_file(filepath, 'r') as f:
+            parser = ijson.parse(f)
+            
+            current_database = None
+            current_table = None
+            current_field = None
+            in_record = False
+            record = None
+            
+            for prefix, event, value in parser:
+                # Simplified parsing focused on records only
+                if event == 'map_key':
+                    if prefix.count('.') == 1 and value != 'extraction_metadata':
+                        current_database = value
+                    elif prefix.count('.') == 3:
+                        current_table = value
+                    elif in_record:
+                        current_field = value
+                
+                elif prefix.endswith('.sample.item') and event == 'start_map':
+                    in_record = True
+                    record = {}
+                
+                elif in_record and current_field and event in ('string', 'number', 'boolean', 'null'):
+                    record[current_field] = value
+                    current_field = None
+                
+                elif in_record and event == 'end_map' and record:
+                    if current_database and current_table:
+                        yield current_database, current_table, record
+                    in_record = False
+                    record = None
     
     def sanitize_value(self, value: Any) -> Any:
         """
@@ -192,7 +272,7 @@ class DataTransformer:
         Returns:
             Dictionary mapping Snowflake table names to transformed records
         """
-        all_transformed_data = {table: [] for table in self.target_tables}
+        all_transformed_data = {table: [] for table in ALL_MAPPINGS.keys()}
         
         # Process each target table by joining its source tables
         for target_table, mapping in ALL_MAPPINGS.items():
@@ -363,9 +443,9 @@ class DataTransformer:
         # If no specific join pattern, return the first record (simple approach)
         return related_data[0] if related_data else None
     
-    def transform_file(self, filepath: str) -> str:
+    def transform_file_streaming(self, filepath: str) -> str:
         """
-        Transform data from an extracted file
+        Transform data from an extracted file using streaming
         
         Args:
             filepath: Path to extracted data file
@@ -373,6 +453,156 @@ class DataTransformer:
         Returns:
             Path to transformed data file
         """
+        self.logger.info(f"Transforming file (streaming): {filepath}")
+        
+        # Prepare output file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"snowflake_data_{timestamp}.json"
+        if self.enable_compression:
+            output_filename += '.gz'
+        output_path = os.path.join(self.config['output_dir'], output_filename)
+        
+        # Track statistics
+        source_record_count = 0
+        transformed_count = {}
+        written_tables = set()
+        
+        with self._open_file(output_path, 'w') as out_file:
+            # Write header
+            out_file.write('{\n  "etl_timestamp": "')
+            out_file.write(datetime.now().isoformat())
+            out_file.write('",\n  "tables": {\n')
+            
+            first_table = True
+            table_buffers = {}
+            
+            # Process records in streaming fashion
+            for database, source_table, record in self._stream_records(filepath):
+                source_record_count += 1
+                
+                # Only process if we have mappings for this source table
+                if source_table not in self.source_to_targets:
+                    continue
+                
+                # Process only relevant target tables (much faster!)
+                for target_info in self.source_to_targets[source_table]:
+                    target_table = target_info['target']
+                    column_mappings = target_info['columns']
+                    
+                    if not column_mappings:
+                        continue
+                    
+                    # Transform record inline for efficiency
+                    transformed = {}
+                    for target_col, source_field in column_mappings.items():
+                        if '.' in source_field:
+                            table_name, field_name = source_field.split('.', 1)
+                            if table_name == source_table and field_name in record:
+                                transformed[target_col] = self._clean_value(
+                                    record[field_name], target_col, target_table
+                                )
+                        elif source_field in record:
+                            transformed[target_col] = self._clean_value(
+                                record[source_field], target_col, target_table
+                            )
+                    
+                    if not transformed:
+                        continue
+                    
+                    # Sanitize values
+                    transformed = {k: self.sanitize_value(v) for k, v in transformed.items()}
+                    
+                    # Buffer management
+                    if target_table not in table_buffers:
+                        table_buffers[target_table] = []
+                    
+                    table_buffers[target_table].append(transformed)
+                    
+                    # Write batch when full
+                    if len(table_buffers[target_table]) >= self.batch_size:
+                        self._write_table_batch(out_file, target_table, table_buffers[target_table],
+                                              written_tables, first_table)
+                        if target_table not in written_tables:
+                            written_tables.add(target_table)
+                            first_table = False
+                        table_buffers[target_table] = []
+                
+                # Progress logging and memory management
+                if source_record_count % 10000 == 0:
+                    self.logger.info(f"Processed {source_record_count:,} source records...")
+                    if source_record_count % 50000 == 0:
+                        gc.collect()
+            
+            # Write remaining buffers
+            for target_table, records in table_buffers.items():
+                if records:
+                    self._write_table_batch(out_file, target_table, records, written_tables, first_table)
+                    if target_table not in written_tables:
+                        written_tables.add(target_table)
+                        first_table = False
+                    transformed_count[target_table] = transformed_count.get(target_table, 0) + len(records)
+            
+            # Close all open table arrays
+            for i, table in enumerate(written_tables):
+                out_file.write('\n    ]')
+                if i < len(written_tables) - 1:
+                    out_file.write(',')
+            
+            # Close JSON structure
+            out_file.write('\n  }\n}\n')
+        
+        # Log summary
+        total_transformed = sum(transformed_count.values())
+        self.logger.info(
+            f"Transformation complete: {source_record_count:,} source records -> "
+            f"{total_transformed:,} transformed records"
+        )
+        
+        return output_path
+    
+    def _write_table_batch(self, out_file: IO, table_name: str, records: List[Dict],
+                          written_tables: set, first_table: bool) -> None:
+        """
+        Write a batch of records for a table to the output file
+        """
+        if not records:
+            return
+        
+        # Write table opening if first time
+        if table_name not in written_tables:
+            if not first_table:
+                out_file.write(',\n')
+            out_file.write(f'    "{table_name}": [\n')
+        else:
+            # Continue existing table
+            out_file.write(',\n')
+        
+        # Write records compactly
+        for i, record in enumerate(records):
+            if i > 0:
+                out_file.write(',\n')
+            out_file.write('      ')
+            json.dump(record, out_file, separators=(',', ':'))
+    
+    def transform_file(self, filepath: str, use_streaming: bool = True) -> str:
+        """
+        Transform data from an extracted file
+        
+        Args:
+            filepath: Path to extracted data file
+            use_streaming: Whether to use streaming for large files
+            
+        Returns:
+            Path to transformed data file
+        """
+        # Check file size to decide on streaming
+        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
+        
+        # Use streaming for files > 100MB or if explicitly requested
+        if use_streaming or file_size_mb > 100:
+            return self.transform_file_streaming(filepath)
+        
+        # For small files, use the original method
         self.logger.info(f"Transforming file: {filepath}")
         
         # Load extracted data
@@ -380,7 +610,7 @@ class DataTransformer:
             extracted_data = json.load(f)
         
         # Initialize transformed data structure
-        all_transformed_data = {table: [] for table in self.target_tables}
+        all_transformed_data = {table: [] for table in ALL_MAPPINGS.keys()}
         
         # Process data based on file structure
         if isinstance(extracted_data, dict):
@@ -452,7 +682,7 @@ class DataTransformer:
         self.logger.info(f"Transforming {len(filepaths)} files in parallel")
         
         # Initialize consolidated data
-        all_transformed_data = {table: [] for table in self.target_tables}
+        all_transformed_data = {table: [] for table in ALL_MAPPINGS.keys()}
         
         if self.config.get('enable_concurrent', True):
             # Process files in parallel
@@ -525,7 +755,7 @@ class DataTransformer:
             extracted_data = json.load(f)
         
         # Initialize result
-        result = {table: [] for table in self.target_tables}
+        result = {table: [] for table in ALL_MAPPINGS.keys()}
         
         # Process data based on file structure
         if isinstance(extracted_data, dict):

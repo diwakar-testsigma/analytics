@@ -14,7 +14,6 @@ from typing import Dict, List, Optional
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
 from src.transformers.transformer import DataTransformer
-from src.transformers.streaming_transformer import StreamingDataTransformer
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags
@@ -234,19 +233,15 @@ class Pipeline:
             self.logger.info(f"Input file: {extracted_file}")
             self.logger.info("Loading transformation mappings...")
             
-            # Choose transformer based on configuration
-            if self.config.ENABLE_STREAMING_TRANSFORMATION:
-                self.logger.info("Using streaming transformer for memory efficiency")
-                transformer = StreamingDataTransformer()
-                # Use streaming transformation
-                transformed_file = transformer.transform_file_streaming(extracted_file)
-            else:
-                self.logger.info("Using standard transformer")
-                transformer = DataTransformer()
-                transformed_file = transformer.transform_file(extracted_file)
+            # Create transformer with streaming settings
+            transformer = DataTransformer({
+                'batch_size': getattr(settings, 'TRANSFORMATION_BATCH_SIZE', 100),
+                'enable_compression': getattr(settings, 'ENABLE_COMPRESSION', True)
+            })
             
-            # Transform the data
+            # Transform the data (automatically uses streaming for large files)
             self.logger.info("Applying transformations based on Snowflake schema...")
+            transformed_file = transformer.transform_file(extracted_file)
             
             # Update metrics
             # Handle both compressed and uncompressed files
