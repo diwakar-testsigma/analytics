@@ -186,6 +186,7 @@ class StreamingJoinPreprocessor:
             in_sample = False
             sample_is_first = True
             record_count = 0
+            expecting_records = False
             
             # Write opening brace
             outfile.write('{\n')
@@ -221,12 +222,22 @@ class StreamingJoinPreprocessor:
                     if event == 'map_key':
                         if value == 'records':
                             outfile.write(f'\n      "records": ')
+                            # Mark that we're expecting a records value
+                            expecting_records = True
                         elif value == 'sample':
+                            # If we were expecting records but didn't get a value, write 0
+                            if expecting_records:
+                                outfile.write('0')
+                                expecting_records = False
                             outfile.write(',\n      "sample": [')
                             in_sample = True
                             sample_is_first = True
-                    elif event == 'number' and prefix == f"{current_db}.{current_table}.records":
-                        outfile.write(str(value))
+                    elif event in ('number', 'null') and prefix == f"{current_db}.{current_table}.records":
+                        if event == 'number':
+                            outfile.write(str(value))
+                        else:
+                            outfile.write('0')  # Write 0 for null records
+                        expecting_records = False
                 
                 # Process records in sample
                 elif in_sample and event == 'start_map' and prefix == f"{current_db}.{current_table}.sample.item":
