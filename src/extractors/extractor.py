@@ -231,8 +231,12 @@ class DataExtractor(BaseExtractor):
             conn = None
             cursor = None
             try:
-                # Use a dummy database parameter to trigger tenant URL selection
-                conn = self.get_connection(self.config, 'tenant_dummy')
+                # Create a temporary config to force tenant URL selection
+                temp_config = self.config.copy()
+                # Temporarily remove other URLs to ensure tenant URL is used
+                temp_config.pop('identity_mysql_connection_url', None)
+                temp_config.pop('master_mysql_connection_url', None)
+                conn = self.get_connection(temp_config, None)
                 cursor = conn.cursor()
                 
                 cursor.execute("SHOW DATABASES")
