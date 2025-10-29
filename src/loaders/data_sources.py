@@ -809,9 +809,10 @@ class SnowflakeDataSource(DataSource):
                 values_list.append(tuple(values))
             
             # Build insert SQL with parameterized query
+            # Convert column names to uppercase for Snowflake
             placeholders = ','.join(['%s'] * len(columns))
             insert_sql = f"""
-            INSERT INTO {table_name} ({','.join(columns)})
+            INSERT INTO {table_name} ({','.join([col.upper() for col in columns])})
             VALUES ({placeholders})
             """
             

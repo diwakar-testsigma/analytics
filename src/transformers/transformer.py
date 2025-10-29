@@ -39,10 +39,17 @@ class DataTransformer:
                 })
         
         os.makedirs(self.output_dir, exist_ok=True)
+        
+        # ETL timestamp for this run - all records will use the same timestamp
+        self.etl_timestamp = None
     
     def transform_file(self, filepath: str) -> str:
         """Transform file with streaming"""
         self.logger.info(f"Starting transformation: {filepath}")
+        
+        # Set ETL timestamp for this run - all records will have the same timestamp
+        self.etl_timestamp = datetime.now().isoformat()
+        self.logger.info(f"ETL timestamp for this run: {self.etl_timestamp}")
         
         # Output file
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -54,7 +61,7 @@ class DataTransformer:
         # Write output
         with gzip.open(output_path, 'wt', encoding='utf-8', compresslevel=1) as f:
             json.dump({
-                "etl_timestamp": datetime.now().isoformat(),
+                "etl_timestamp": self.etl_timestamp,
                 "tables": table_data
             }, f, indent=2)
         
@@ -158,6 +165,11 @@ class DataTransformer:
                         value = bool(value) if value is not None else None
                     
                     transformed[target_col] = value
+            
+            # Add ETL_TIMESTAMP to every record
+            # This will be used by Snowflake to track when the record was processed
+            # All records in this run will have the same timestamp
+            transformed['etl_timestamp'] = self.etl_timestamp
             
             return transformed if transformed else None
             
