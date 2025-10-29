@@ -641,10 +641,28 @@ class SnowflakeDataSource(DataSource):
                                 processed_row[col] = bool(int(value))
                             elif value in (True, False, 'true', 'false', 'True', 'False'):
                                 processed_row[col] = value if isinstance(value, bool) else (value.lower() == 'true')
+                            elif isinstance(value, str) and value.startswith("b'"):
+                                # Handle string representations of bytes (from transformed JSON)
+                                if value == "b'\\x00'":
+                                    processed_row[col] = False
+                                elif value == "b'\\x01'":
+                                    processed_row[col] = True
+                                else:
+                                    processed_row[col] = None  # Unknown byte value
                             else:
                                 processed_row[col] = value
                         else:
-                            processed_row[col] = value
+                            # Check all other values for byte string representations
+                            if isinstance(value, str) and value.startswith("b'"):
+                                # Handle string representations of bytes (from transformed JSON)
+                                if value == "b'\\x00'":
+                                    processed_row[col] = False
+                                elif value == "b'\\x01'":
+                                    processed_row[col] = True
+                                else:
+                                    processed_row[col] = None  # Unknown byte value
+                            else:
+                                processed_row[col] = value
                     
                     json.dump(processed_row, tmp_file)
                     tmp_file.write('\n')
@@ -821,6 +839,14 @@ class SnowflakeDataSource(DataSource):
                         values.append(json.dumps(value))
                     elif isinstance(value, bool):
                         values.append(value)
+                    elif isinstance(value, str) and value.startswith("b'"):
+                        # Handle string representations of bytes (from transformed JSON)
+                        if value == "b'\\x00'":
+                            values.append(False)
+                        elif value == "b'\\x01'":
+                            values.append(True)
+                        else:
+                            values.append(None)  # Unknown byte value
                     elif col.endswith('_time') or col.endswith('_at') or col == 'timestamp':
                         # Convert Unix timestamps (milliseconds) to datetime strings
                         if isinstance(value, (int, float)) and value > 10000000000:  # Unix timestamp in ms
@@ -830,7 +856,16 @@ class SnowflakeDataSource(DataSource):
                         else:
                             values.append(value)
                     else:
-                        values.append(value)
+                        # Final check for any remaining byte string representations
+                        if isinstance(value, str) and value.startswith("b'"):
+                            if value == "b'\\x00'":
+                                values.append(False)
+                            elif value == "b'\\x01'":
+                                values.append(True)
+                            else:
+                                values.append(None)
+                        else:
+                            values.append(value)
                 
                 values_list.append(tuple(values))
             
