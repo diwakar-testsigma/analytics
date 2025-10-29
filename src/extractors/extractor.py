@@ -21,6 +21,7 @@ import threading
 
 from .base import BaseExtractor
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
+from .static_tables import is_static_table
 
 
 class DataExtractor(BaseExtractor):
@@ -679,7 +680,12 @@ class DataExtractor(BaseExtractor):
             # Get date filter params to check if filtering is actually enabled
             start_date, end_date = self._get_date_filter_params()
             
-            if has_date_column and (start_date or end_date):
+            # Skip date filtering for static/reference tables
+            skip_date_filter = is_static_table(table_name)
+            if skip_date_filter and has_date_column and (start_date or end_date):
+                self.logger.debug(f"Skipping date filter for static table: {table_name}")
+            
+            if has_date_column and (start_date or end_date) and not skip_date_filter:
                 # For large tables with date filtering, use approximate count if possible
                 # First try to get table stats from information_schema (very fast)
                 cursor.execute("""
@@ -774,7 +780,12 @@ class DataExtractor(BaseExtractor):
             # Get date filter params to check if filtering is actually enabled
             start_date, end_date = self._get_date_filter_params()
             
-            if has_date_column and (start_date or end_date):
+            # Skip date filtering for static/reference tables
+            skip_date_filter = is_static_table(table_name)
+            if skip_date_filter and has_date_column and (start_date or end_date):
+                self.logger.debug(f"Skipping date filter for static table: {table_name}")
+            
+            if has_date_column and (start_date or end_date) and not skip_date_filter:
                 # Use date filtering
                 base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
                 query, params = self._build_date_filter_query(table_name, base_query, date_column)

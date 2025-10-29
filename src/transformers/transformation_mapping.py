@@ -146,10 +146,6 @@ MASTER_MAPPINGS = {
         "column_mappings": {
             "template_id": "nlp_test_case_step_templates.id",
             "name": "nlp_test_case_step_templates.display_name",
-            "content": "nlp_test_case_step_templates.content",
-            "language": "nlp_test_case_step_templates.language",
-            "category": "nlp_test_case_step_templates.category",
-            "is_active": "nlp_test_case_step_templates.is_active",
             "created_at": "nlp_test_case_step_templates.created_at_epoch",
             "updated_at": "nlp_test_case_step_templates.updated_at_epoch",
             "keyword": "nlp_test_case_step_templates.keyword",
@@ -292,8 +288,8 @@ TENANT_MAPPINGS = {
             "end_time": "test_case_result.end_time",
             "duration_seconds": "test_case_result.duration",
             "error_message": "test_case_result.message",
-            "retry_count": "test_case_result.retry_count",
-            "is_flaky": "test_case_result.is_flaky",
+            "retry_count": "test_case_result.re_run_parent_id",  # Using re_run_parent_id as proxy for retry
+            "is_fixed": "test_case_result.is_fixed",  # Direct mapping to is_fixed field
             "created_at": "test_case_result.created_date",
             "updated_at": "test_case_result.updated_date"
         }
@@ -359,14 +355,17 @@ TENANT_MAPPINGS = {
         "primary_key": "api_step_id",
         "column_mappings": {
             "api_step_id": "api_steps.id",
-            "test_step_id": "api_steps.step_id",
+            "test_step_id": "api_steps.step_id",  # Foreign key to nlp_test_case_step
             "tenant_id": "api_steps.tenant_tsid",
             "user_id": "api_steps.created_by_id",
-            "method": "api_steps.request_type",
+            "method": "api_steps.request_type",  # request_type is the HTTP method
             "url": "api_steps.url",
             "api_type": "api_steps.api_type",
             "authentication_type": "api_steps.authentication_type",
             "body_type": "api_steps.body_type",
+            "title": "api_steps.title",  # Added title field
+            "url_type": "api_steps.url_type",  # Added url_type
+            "step_result_uuid": "api_steps.step_result_uuid",  # Added
             "created_at": "api_steps.created_date",
             "updated_at": "api_steps.updated_date"
         }
@@ -487,7 +486,7 @@ TENANT_MAPPINGS = {
             "entity_type": "audit_history.entity_model",
             "entity_id": "audit_history.entity_id",
             "user_id": "audit_history.actor_id",
-            "tenant_id": "audit_history.organization_tsid",
+            "tenant_id": "audit_history.tenant_tsid",
             "changes_json": "audit_history.new_entity_data",
             "ip_address": "audit_history.client_ip_address",
             "timestamp": "audit_history.action_date",

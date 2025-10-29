@@ -13,12 +13,12 @@ CREATE TABLE IF NOT EXISTS dim_users (
     last_logged_in_at TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    is_2fa_enabled BOOLEAN DEFAULT FALSE,
+    is_2fa_enabled BOOLEAN,
     user_account_id INTEGER,
     account_id INTEGER,
-    is_account_owner BOOLEAN DEFAULT FALSE,
+    is_account_owner BOOLEAN,
     account_status VARCHAR(50),
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_organizations (
@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS dim_organizations (
     updated_by_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_accounts (
@@ -40,8 +40,7 @@ CREATE TABLE IF NOT EXISTS dim_accounts (
     auth_enabled BOOLEAN,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
+    etl_timestamp TIMESTAMP;
 
 -- ===== MASTER SCHEMA (6 tables) =====
 
@@ -63,7 +62,7 @@ CREATE TABLE IF NOT EXISTS dim_tenants (
     max_projects INTEGER,
     total_parallel_runs INTEGER,
     next_renewal_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS brg_tenant_features (
@@ -73,18 +72,18 @@ CREATE TABLE IF NOT EXISTS brg_tenant_features (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     feature_name VARCHAR(255),
-    is_add_on BOOLEAN DEFAULT FALSE,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    is_add_on BOOLEAN,
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_features (
     feature_id INTEGER PRIMARY KEY,
     name VARCHAR(255),
-    is_premium BOOLEAN DEFAULT FALSE,
+    is_premium BOOLEAN,
     tenant_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_data_generators (
@@ -97,7 +96,7 @@ CREATE TABLE IF NOT EXISTS dim_data_generators (
     class_package VARCHAR(500),
     class_name VARCHAR(255),
     lib_type VARCHAR(100),
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_nlp_templates (
@@ -106,17 +105,17 @@ CREATE TABLE IF NOT EXISTS dim_nlp_templates (
     content TEXT,
     language VARCHAR(50),
     category VARCHAR(100),
-    is_active BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     keyword VARCHAR(255),
     application_type VARCHAR(100),
-    is_deprecated BOOLEAN DEFAULT FALSE,
+    is_deprecated BOOLEAN,
     is_actionable BOOLEAN,
     is_verifiable BOOLEAN,
     type VARCHAR(100),
     api_supported BOOLEAN,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_object_types (
@@ -128,8 +127,7 @@ CREATE TABLE IF NOT EXISTS dim_object_types (
     package_name VARCHAR(500),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
+    etl_timestamp TIMESTAMP;
 
 -- ===== TENANT SCHEMA (16 tables) =====
 
@@ -143,7 +141,7 @@ CREATE TABLE IF NOT EXISTS dim_projects (
     updated_by_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_applications (
@@ -157,7 +155,7 @@ CREATE TABLE IF NOT EXISTS dim_applications (
     updated_by_id INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_test_cases (
@@ -178,7 +176,7 @@ CREATE TABLE IF NOT EXISTS dim_test_cases (
     is_ai_generated BOOLEAN,
     is_data_driven BOOLEAN,
     is_step_group BOOLEAN,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_test_steps (
@@ -193,7 +191,7 @@ CREATE TABLE IF NOT EXISTS fct_test_steps (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     element_id INTEGER,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_executions (
@@ -212,7 +210,7 @@ CREATE TABLE IF NOT EXISTS fct_executions (
     environment_type VARCHAR(50),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_test_results (
@@ -226,11 +224,11 @@ CREATE TABLE IF NOT EXISTS fct_test_results (
     end_time TIMESTAMP,
     duration_seconds INTEGER,
     error_message TEXT,
-    retry_count INTEGER DEFAULT 0,
-    is_flaky BOOLEAN DEFAULT FALSE,
+    retry_count INTEGER,  -- Using re_run_parent_id as proxy
+    is_fixed BOOLEAN,  -- Changed from is_flaky to match source data
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_elements (
@@ -244,7 +242,7 @@ CREATE TABLE IF NOT EXISTS dim_elements (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     locator_type VARCHAR(50),
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_test_data (
@@ -259,7 +257,7 @@ CREATE TABLE IF NOT EXISTS dim_test_data (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     data_id INTEGER,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_agents (
@@ -276,22 +274,25 @@ CREATE TABLE IF NOT EXISTS dim_agents (
     version VARCHAR(50),
     is_active BOOLEAN,
     last_pinged_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_api_steps (
     api_step_id INTEGER PRIMARY KEY,
-    test_step_id INTEGER,
+    test_step_id INTEGER,  -- Foreign key to nlp_test_case_step
     tenant_id BIGINT,
     user_id INTEGER,
-    method VARCHAR(20),
+    method VARCHAR(20),  -- Maps to request_type in source
     url TEXT,
     api_type VARCHAR(50),
     authentication_type VARCHAR(50),
     body_type VARCHAR(50),
+    title VARCHAR(256),
+    url_type VARCHAR(20),
+    step_result_uuid VARCHAR(80),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_accessibility_results (
@@ -307,11 +308,11 @@ CREATE TABLE IF NOT EXISTS fct_accessibility_results (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     page_url TEXT,
-    critical_issues INTEGER DEFAULT 0,
-    minor_issues INTEGER DEFAULT 0,
-    serious_issues INTEGER DEFAULT 0,
-    moderate_issues INTEGER DEFAULT 0,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    critical_issues INTEGER,
+    minor_issues INTEGER,
+    serious_issues INTEGER,
+    moderate_issues INTEGER,
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS dim_test_suites (
@@ -327,7 +328,7 @@ CREATE TABLE IF NOT EXISTS dim_test_suites (
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
     suite_id INTEGER,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
@@ -336,18 +337,18 @@ CREATE TABLE IF NOT EXISTS fct_cross_tenant_metrics (
     test_plan_result_id INTEGER,
     result VARCHAR(100),
     latest_result VARCHAR(100),
-    total_count INTEGER DEFAULT 0,
-    failed_count INTEGER DEFAULT 0,
-    passed_count INTEGER DEFAULT 0,
-    stopped_count INTEGER DEFAULT 0,
-    not_executed_count INTEGER DEFAULT 0,
-    running_count INTEGER DEFAULT 0,
-    queued_count INTEGER DEFAULT 0,
+    total_count INTEGER,
+    failed_count INTEGER,
+    passed_count INTEGER,
+    stopped_count INTEGER,
+    not_executed_count INTEGER,
+    running_count INTEGER,
+    queued_count INTEGER,
     duration INTEGER,
     consolidated_duration INTEGER,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_test_plan_results (
@@ -366,7 +367,7 @@ CREATE TABLE IF NOT EXISTS fct_test_plan_results (
     trigger_type VARCHAR(100),
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_agent_activity (
@@ -381,7 +382,7 @@ CREATE TABLE IF NOT EXISTS fct_agent_activity (
     end_time TIMESTAMP,
     created_at TIMESTAMP,
     updated_at TIMESTAMP,
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
+    etl_timestamp TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS fct_audit_events (
@@ -401,8 +402,7 @@ CREATE TABLE IF NOT EXISTS fct_audit_events (
     action VARCHAR(100),
     event_time TIMESTAMP,
     status VARCHAR(50),
-    etl_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
-);
+    etl_timestamp TIMESTAMP;
 
 -- ===== CLUSTERING STRATEGY =====
 -- Optimized clustering based on query patterns from all dashboards

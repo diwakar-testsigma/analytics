@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional
 import logging
 
 from .transformation_mapping import ALL_MAPPINGS
+from .joined_mapping_override import apply_join_overrides
 
 
 class DataTransformer:
@@ -27,9 +28,12 @@ class DataTransformer:
             from ..config import settings
             self.output_dir = settings.TRANSFORMED_OUTPUT_DIR
         
+        # Apply join overrides to mappings
+        mappings = apply_join_overrides(ALL_MAPPINGS.copy())
+        
         # Pre-compute source mappings
         self.source_mappings = {}
-        for target, mapping in ALL_MAPPINGS.items():
+        for target, mapping in mappings.items():
             for source in mapping.get('source_tables', []):
                 if source not in self.source_mappings:
                     self.source_mappings[source] = []
@@ -43,16 +47,22 @@ class DataTransformer:
         # ETL timestamp for this run - all records will use the same timestamp
         self.etl_timestamp = None
     
-    def transform_file(self, filepath: str) -> str:
-        """Transform file with streaming"""
+    def transform_file(self, filepath: str, timestamp: str = None) -> str:
+        """Transform file with streaming
+        
+        Args:
+            filepath: Input file path
+            timestamp: Optional timestamp for output filename (for consistency across pipeline)
+        """
         self.logger.info(f"Starting transformation: {filepath}")
         
         # Set ETL timestamp for this run - all records will have the same timestamp
         self.etl_timestamp = datetime.now().isoformat()
         self.logger.info(f"ETL timestamp for this run: {self.etl_timestamp}")
         
-        # Output file
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Output file - use provided timestamp or generate new one
+        if not timestamp:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = os.path.join(self.output_dir, f"snowflake_data_{timestamp}.json.gz")
         
         # Process and collect records
@@ -148,7 +158,11 @@ class DataTransformer:
                 
                 if '.' in source_field:
                     table_name, field_name = source_field.split('.', 1)
-                    if table_name == source_table and field_name in record:
+                    # Check if the field exists in the record directly (from joins)
+                    if source_field in record:
+                        value = record[source_field]
+                    # Otherwise check if it's from the current table
+                    elif table_name == source_table and field_name in record:
                         value = record[field_name]
                 elif source_field in record:
                     value = record[source_field]
