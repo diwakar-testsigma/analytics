@@ -599,6 +599,19 @@ class SnowflakeDataSource(DataSource):
                     for col, value in row.items():
                         if value is None:
                             processed_row[col] = None
+                        elif isinstance(value, bytes):
+                            # Handle bytes values - common for boolean columns from MySQL
+                            if value == b'\x00':
+                                processed_row[col] = False
+                            elif value == b'\x01':
+                                processed_row[col] = True
+                            else:
+                                # Try to decode as string
+                                try:
+                                    processed_row[col] = value.decode('utf-8')
+                                except:
+                                    # If decode fails, convert to hex string
+                                    processed_row[col] = value.hex()
                         elif isinstance(value, (dict, list)):
                             processed_row[col] = value  # Keep as-is for JSON
                         elif col.endswith('_time') or col.endswith('_at') or col == 'timestamp':
@@ -790,6 +803,19 @@ class SnowflakeDataSource(DataSource):
                     # Handle different data types
                     if value is None:
                         values.append(None)
+                    elif isinstance(value, bytes):
+                        # Handle bytes values - common for boolean columns from MySQL
+                        if value == b'\x00':
+                            values.append(False)
+                        elif value == b'\x01':
+                            values.append(True)
+                        else:
+                            # Try to decode as string
+                            try:
+                                values.append(value.decode('utf-8'))
+                            except:
+                                # If decode fails, convert to hex string
+                                values.append(value.hex())
                     elif isinstance(value, (dict, list)):
                         # Convert dict/list to JSON string for VARIANT columns
                         values.append(json.dumps(value))
