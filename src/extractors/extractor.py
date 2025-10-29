@@ -17,6 +17,7 @@ import pymysql
 import pymysql.cursors
 import atexit
 import gc
+import threading
 
 from .base import BaseExtractor
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
@@ -39,6 +40,7 @@ class DataExtractor(BaseExtractor):
         self._date_column_cache = {}
         self._date_filter_cache = None
         self._connection_pool = {}  # Connection pooling for reuse
+        self._connection_pool_lock = threading.Lock()  # Thread-safe access
         self._table_columns_cache = {}  # Cache all columns per database
         
         # Register cleanup function to prevent fatal errors
@@ -48,13 +50,14 @@ class DataExtractor(BaseExtractor):
     def _cleanup(self):
         """Cleanup function to prevent MySQL connector fatal errors"""
         try:
-            # Close all pooled connections
-            for conn in self._connection_pool.values():
-                try:
-                    conn.close()
-                except:
-                    pass
-            self._connection_pool.clear()
+            # Thread-safe cleanup of all pooled connections
+            with self._connection_pool_lock:
+                for conn in self._connection_pool.values():
+                    try:
+                        conn.close()
+                    except:
+                        pass
+                self._connection_pool.clear()
             
             # Force garbage collection to clean up MySQL connections
             gc.collect()
@@ -190,22 +193,24 @@ class DataExtractor(BaseExtractor):
         elif parsed.path and len(parsed.path) > 1:
             connection_params['database'] = parsed.path[1:]
         
-        # Check connection pool first
+        # Thread-safe connection pool access
         pool_key = f"{parsed.hostname}:{parsed.port}:{database or 'default'}"
-        if pool_key in self._connection_pool:
-            conn = self._connection_pool[pool_key]
-            try:
-                # Test if connection is still alive
-                conn.ping(reconnect=True)
-                return conn
-            except:
-                # Connection is dead, remove from pool
-                del self._connection_pool[pool_key]
         
-        # Create new connection and add to pool
-        conn = pymysql.connect(**connection_params)
-        self._connection_pool[pool_key] = conn
-        return conn
+        with self._connection_pool_lock:
+            if pool_key in self._connection_pool:
+                conn = self._connection_pool[pool_key]
+                try:
+                    # Test if connection is still alive
+                    conn.ping(reconnect=True)
+                    return conn
+                except:
+                    # Connection is dead, remove from pool
+                    del self._connection_pool[pool_key]
+            
+            # Create new connection and add to pool
+            conn = pymysql.connect(**connection_params)
+            self._connection_pool[pool_key] = conn
+            return conn
     
     def list_databases_from_connection(self, connection_type: str) -> List[str]:
         """
@@ -231,12 +236,24 @@ class DataExtractor(BaseExtractor):
             conn = None
             cursor = None
             try:
-                # Create a temporary config to force tenant URL selection
-                temp_config = self.config.copy()
-                # Temporarily remove other URLs to ensure tenant URL is used
-                temp_config.pop('identity_mysql_connection_url', None)
-                temp_config.pop('master_mysql_connection_url', None)
-                conn = self.get_connection(temp_config, None)
+                # Connect without specifying a database to list all databases
+                # We need to directly use tenant connection URL
+                connection_url = self.config.get('tenant_mysql_connection_url')
+                if not connection_url:
+                    return []
+                    
+                from urllib.parse import urlparse
+                parsed = urlparse(connection_url)
+                
+                conn = pymysql.connect(
+                    host=parsed.hostname,
+                    port=parsed.port if parsed.port else 3306,
+                    user=parsed.username,
+                    password=parsed.password,
+                    charset='utf8mb4',
+                    autocommit=True,
+                    connect_timeout=30
+                )
                 cursor = conn.cursor()
                 
                 cursor.execute("SHOW DATABASES")
@@ -722,9 +739,34 @@ class DataExtractor(BaseExtractor):
         conn = None
         cursor = None
         try:
-            conn = self.get_connection(self.config, database)
-            # Use DictCursor for table data extraction to get dictionaries
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            # For parallel extraction, create a fresh connection to avoid pool conflicts
+            # This is especially important for tenant databases with many parallel workers
+            if database.startswith('tenant'):
+                # Direct connection for tenant databases to avoid pool conflicts
+                connection_url = self.config.get('tenant_mysql_connection_url')
+                if not connection_url:
+                    raise ValueError("TENANT_MYSQL_CONNECTION_URL not found")
+                    
+                from urllib.parse import urlparse
+                parsed = urlparse(connection_url)
+                
+                conn = pymysql.connect(
+                    host=parsed.hostname,
+                    port=parsed.port if parsed.port else 3306,
+                    user=parsed.username,
+                    password=parsed.password,
+                    database=database,
+                    charset='utf8mb4',
+                    autocommit=True,
+                    connect_timeout=30,
+                    read_timeout=300,
+                    cursorclass=pymysql.cursors.DictCursor
+                )
+                cursor = conn.cursor()
+            else:
+                conn = self.get_connection(self.config, database)
+                # Use DictCursor for table data extraction to get dictionaries
+                cursor = conn.cursor(pymysql.cursors.DictCursor)
             
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)
@@ -754,12 +796,20 @@ class DataExtractor(BaseExtractor):
             self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
             return []
         finally:
-            # Only close cursor, keep connection in pool
+            # Always close cursor
             if cursor:
                 try:
                     cursor.close()
                 except:
                     pass
+            # Close direct connections (not from pool) for tenant databases
+            if conn and database.startswith('tenant'):
+                try:
+                    conn.close()
+                except:
+                    pass
+            # Note: Don't close pooled connections here
+            # They will be reused by other threads
     
     def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
