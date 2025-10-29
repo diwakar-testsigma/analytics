@@ -12,8 +12,20 @@ from datetime import datetime
 from typing import Dict, Any, List, Optional, Tuple
 import logging
 from collections import defaultdict
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
+
+
+def convert_decimals(obj):
+    """Convert Decimal objects to strings for JSON serialization"""
+    if isinstance(obj, Decimal):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_decimals(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_decimals(item) for item in obj]
+    return obj
 
 
 class StreamingJoinPreprocessor:
@@ -240,7 +252,9 @@ class StreamingJoinPreprocessor:
                         outfile.write(',')
                     sample_is_first = False
                     outfile.write('\n        ')
-                    json.dump(joined_record, outfile, ensure_ascii=False)
+                    # Convert Decimal objects before serialization
+                    cleaned_record = convert_decimals(joined_record)
+                    json.dump(cleaned_record, outfile, ensure_ascii=False)
                     
                     record_count += 1
                     if record_count % 10000 == 0:
