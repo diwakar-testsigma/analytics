@@ -27,6 +27,7 @@ class Pipeline:
     
     def __init__(self, extraction_start_date: Optional[str] = None, 
                  extracted_file: Optional[str] = None,
+                 preprocessed_file: Optional[str] = None,
                  transformed_file: Optional[str] = None):
         """
         Initialize ETL Pipeline
@@ -34,11 +35,13 @@ class Pipeline:
         Args:
             extraction_start_date: Optional override for extraction start date (YYYY-MM-DD)
             extracted_file: Optional specific extracted file to use when SKIP_EXTRACTION=true
+            preprocessed_file: Optional specific preprocessed file to use when SKIP_PREPROCESSING=true
             transformed_file: Optional specific transformed file to use when SKIP_TRANSFORMATION=true
         """
         self.config = settings
         self.extraction_start_date_override = extraction_start_date
         self.extracted_file_override = extracted_file
+        self.preprocessed_file_override = preprocessed_file
         self.transformed_file_override = transformed_file
         self.logger = self._setup_logging()
         self.metrics = self._initialize_metrics()
@@ -49,6 +52,8 @@ class Pipeline:
             self.logger.info(f"Extraction start date override: {extraction_start_date}")
         if extracted_file:
             self.logger.info(f"Extracted file override: {extracted_file}")
+        if preprocessed_file:
+            self.logger.info(f"Preprocessed file override: {preprocessed_file}")
         if transformed_file:
             self.logger.info(f"Transformed file override: {transformed_file}")
         
@@ -300,12 +305,43 @@ class Pipeline:
         try:
             self.logger.info(f"Input file: {extracted_file}")
             
-            # Step 1: Preprocessing
-            self.logger.info("-" * 60)
-            self.logger.info("Step 1: Preprocessing joins...")
-            # Pass job_id as timestamp for consistency across pipeline files
-            preprocessed_file = preprocess_file(extracted_file, timestamp=self.job_id)
-            self.logger.info(f"Preprocessed file: {preprocessed_file}")
+            # Check if preprocessing should be skipped
+            if settings.SKIP_PREPROCESSING:
+                self.logger.info("-" * 60)
+                self.logger.info("Step 1: Preprocessing SKIPPED (SKIP_PREPROCESSING=true)")
+                
+                if self.preprocessed_file_override:
+                    # Use the specified file
+                    output_dir = Path(self.config.OUTPUT_DIR) / "preprocessed"
+                    specified_file = output_dir / self.preprocessed_file_override
+                    
+                    if not specified_file.exists():
+                        # Also check if it's an absolute path
+                        specified_file = Path(self.preprocessed_file_override)
+                        if not specified_file.exists():
+                            raise FileNotFoundError(f"Specified preprocessed file not found: {self.preprocessed_file_override}")
+                    
+                    preprocessed_file = str(specified_file)
+                    self.logger.info(f"Using specified preprocessed file: {preprocessed_file}")
+                else:
+                    # Find the latest preprocessed file
+                    output_dir = Path(self.config.OUTPUT_DIR) / "preprocessed"
+                    preprocessed_files = list(output_dir.glob("preprocessed_data_*.json*"))
+                    
+                    if not preprocessed_files:
+                        raise FileNotFoundError("No preprocessed files found to skip preprocessing")
+                    
+                    # Get the most recent file
+                    latest_file = max(preprocessed_files, key=lambda p: p.stat().st_mtime)
+                    preprocessed_file = str(latest_file)
+                    self.logger.info(f"Using latest preprocessed file: {preprocessed_file}")
+            else:
+                # Step 1: Preprocessing
+                self.logger.info("-" * 60)
+                self.logger.info("Step 1: Preprocessing joins...")
+                # Pass job_id as timestamp for consistency across pipeline files
+                preprocessed_file = preprocess_file(extracted_file, timestamp=self.job_id)
+                self.logger.info(f"Preprocessed file: {preprocessed_file}")
             
             # Step 2: Transformation
             self.logger.info("-" * 60)
@@ -751,6 +787,9 @@ Examples:
   # Skip extraction and use specific extracted file
   SKIP_EXTRACTION=true python -m src.pipeline --extracted-file extracted_data_20251030_123456.json
   
+  # Skip preprocessing and use specific preprocessed file
+  SKIP_EXTRACTION=true SKIP_PREPROCESSING=true python -m src.pipeline --preprocessed-file preprocessed_data_20251030_123456.json
+  
   # Skip both extraction and transformation with specific transformed file
   SKIP_EXTRACTION=true SKIP_TRANSFORMATION=true python -m src.pipeline --transformed-file snowflake_data_20251030_123456.json.gz
   
@@ -762,6 +801,11 @@ Examples:
     parser.add_argument(
         '--extracted-file',
         help='Specific extracted file to use when SKIP_EXTRACTION=true (filename or full path)'
+    )
+    
+    parser.add_argument(
+        '--preprocessed-file',
+        help='Specific preprocessed file to use when SKIP_PREPROCESSING=true (filename or full path)'
     )
     
     parser.add_argument(
@@ -778,19 +822,22 @@ Examples:
     parser.add_argument(
         'file',
         nargs='?',
-        help='File to use (extracted file if SKIP_EXTRACTION=true, transformed if both skips are true)'
+        help='File to use (extracted if SKIP_EXTRACTION, preprocessed if SKIP_PREPROCESSING, transformed if SKIP_TRANSFORMATION)'
     )
     
     args = parser.parse_args()
     
     # Handle backward compatibility with positional argument
     extracted_file = args.extracted_file
+    preprocessed_file = args.preprocessed_file
     transformed_file = args.transformed_file
     
     if args.file:
         # Positional argument provided - determine which type based on skip flags
-        if settings.SKIP_TRANSFORMATION and settings.SKIP_EXTRACTION:
+        if settings.SKIP_TRANSFORMATION:
             transformed_file = args.file
+        elif settings.SKIP_PREPROCESSING and settings.SKIP_EXTRACTION:
+            preprocessed_file = args.file
         elif settings.SKIP_EXTRACTION:
             extracted_file = args.file
     
@@ -798,6 +845,7 @@ Examples:
     pipeline = Pipeline(
         extraction_start_date=args.start_date,
         extracted_file=extracted_file,
+        preprocessed_file=preprocessed_file,
         transformed_file=transformed_file
     )
     pipeline.run()
