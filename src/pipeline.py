@@ -15,8 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
-from src.transformers.transformer import DataTransformer
-from src.transformers.streaming_join_preprocessor import preprocess_file
+from src.transformers.direct_snowflake_transformer import transform_to_snowflake
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags, update_transformation_state
@@ -27,7 +26,6 @@ class Pipeline:
     
     def __init__(self, extraction_start_date: Optional[str] = None, 
                  extracted_file: Optional[str] = None,
-                 preprocessed_file: Optional[str] = None,
                  transformed_file: Optional[str] = None):
         """
         Initialize ETL Pipeline
@@ -35,13 +33,11 @@ class Pipeline:
         Args:
             extraction_start_date: Optional override for extraction start date (YYYY-MM-DD)
             extracted_file: Optional specific extracted file to use when SKIP_EXTRACTION=true
-            preprocessed_file: Optional specific preprocessed file to use when SKIP_PREPROCESSING=true
             transformed_file: Optional specific transformed file to use when SKIP_TRANSFORMATION=true
         """
         self.config = settings
         self.extraction_start_date_override = extraction_start_date
         self.extracted_file_override = extracted_file
-        self.preprocessed_file_override = preprocessed_file
         self.transformed_file_override = transformed_file
         self.logger = self._setup_logging()
         self.metrics = self._initialize_metrics()
@@ -52,8 +48,6 @@ class Pipeline:
             self.logger.info(f"Extraction start date override: {extraction_start_date}")
         if extracted_file:
             self.logger.info(f"Extracted file override: {extracted_file}")
-        if preprocessed_file:
-            self.logger.info(f"Preprocessed file override: {preprocessed_file}")
         if transformed_file:
             self.logger.info(f"Transformed file override: {transformed_file}")
         
@@ -300,59 +294,16 @@ class Pipeline:
         self.logger.info("=" * 60)
         
         transformation_start = datetime.now()
-        preprocessed_file = None
         
         try:
             self.logger.info(f"Input file: {extracted_file}")
             
-            # Check if preprocessing should be skipped
-            if settings.SKIP_PREPROCESSING:
-                self.logger.info("-" * 60)
-                self.logger.info("Step 1: Preprocessing SKIPPED (SKIP_PREPROCESSING=true)")
-                
-                if self.preprocessed_file_override:
-                    # Use the specified file
-                    output_dir = Path(self.config.OUTPUT_DIR) / "preprocessed"
-                    specified_file = output_dir / self.preprocessed_file_override
-                    
-                    if not specified_file.exists():
-                        # Also check if it's an absolute path
-                        specified_file = Path(self.preprocessed_file_override)
-                        if not specified_file.exists():
-                            raise FileNotFoundError(f"Specified preprocessed file not found: {self.preprocessed_file_override}")
-                    
-                    preprocessed_file = str(specified_file)
-                    self.logger.info(f"Using specified preprocessed file: {preprocessed_file}")
-                else:
-                    # Find the latest preprocessed file
-                    output_dir = Path(self.config.OUTPUT_DIR) / "preprocessed"
-                    preprocessed_files = list(output_dir.glob("preprocessed_data_*.json*"))
-                    
-                    if not preprocessed_files:
-                        raise FileNotFoundError("No preprocessed files found to skip preprocessing")
-                    
-                    # Get the most recent file
-                    latest_file = max(preprocessed_files, key=lambda p: p.stat().st_mtime)
-                    preprocessed_file = str(latest_file)
-                    self.logger.info(f"Using latest preprocessed file: {preprocessed_file}")
-            else:
-                # Step 1: Preprocessing
-                self.logger.info("-" * 60)
-                self.logger.info("Step 1: Preprocessing joins...")
-                # Pass job_id as timestamp for consistency across pipeline files
-                preprocessed_file = preprocess_file(extracted_file, timestamp=self.job_id)
-                self.logger.info(f"Preprocessed file: {preprocessed_file}")
+            # Direct transformation to Snowflake format
+            self.logger.info("-" * 60) 
+            self.logger.info("Transforming directly to Snowflake format...")
             
-            # Step 2: Transformation
-            self.logger.info("-" * 60)
-            self.logger.info("Step 2: Applying transformations...")
-            # Use event-based streaming transformer
-            transformer = DataTransformer({
-                'output_dir': settings.TRANSFORMED_OUTPUT_DIR
-            })
-            
-            # Transform the preprocessed data with consistent timestamp
-            transformed_file = transformer.transform_file(preprocessed_file, timestamp=self.job_id)
+            # Transform with consistent timestamp
+            transformed_file = transform_to_snowflake(extracted_file, timestamp=self.job_id)
             
             # Update metrics without loading entire file
             table_counts, total_records = self._get_file_metrics_streaming(transformed_file)
@@ -372,7 +323,6 @@ class Pipeline:
                 f"{self.metrics['transformation']['records_transformed']:,} records "
                 f"in {len(self.metrics['transformation']['tables_transformed'])} tables"
             )
-            self.logger.info(f"Preprocessed file: {preprocessed_file}")
             self.logger.info(f"Transformed file: {transformed_file}")
             self.logger.info("=" * 60)
             
@@ -787,8 +737,6 @@ Examples:
   # Skip extraction and use specific extracted file
   SKIP_EXTRACTION=true python -m src.pipeline --extracted-file extracted_data_20251030_123456.json
   
-  # Skip preprocessing and use specific preprocessed file
-  SKIP_EXTRACTION=true SKIP_PREPROCESSING=true python -m src.pipeline --preprocessed-file preprocessed_data_20251030_123456.json
   
   # Skip both extraction and transformation with specific transformed file
   SKIP_EXTRACTION=true SKIP_TRANSFORMATION=true python -m src.pipeline --transformed-file snowflake_data_20251030_123456.json.gz
@@ -804,12 +752,7 @@ Examples:
     )
     
     parser.add_argument(
-        '--preprocessed-file',
-        help='Specific preprocessed file to use when SKIP_PREPROCESSING=true (filename or full path)'
-    )
-    
-    parser.add_argument(
-        '--transformed-file', 
+        '--transformed-file',
         help='Specific transformed file to use when SKIP_TRANSFORMATION=true (filename or full path)'
     )
     
@@ -829,15 +772,12 @@ Examples:
     
     # Handle backward compatibility with positional argument
     extracted_file = args.extracted_file
-    preprocessed_file = args.preprocessed_file
     transformed_file = args.transformed_file
     
     if args.file:
         # Positional argument provided - determine which type based on skip flags
         if settings.SKIP_TRANSFORMATION:
             transformed_file = args.file
-        elif settings.SKIP_PREPROCESSING and settings.SKIP_EXTRACTION:
-            preprocessed_file = args.file
         elif settings.SKIP_EXTRACTION:
             extracted_file = args.file
     
@@ -845,7 +785,6 @@ Examples:
     pipeline = Pipeline(
         extraction_start_date=args.start_date,
         extracted_file=extracted_file,
-        preprocessed_file=preprocessed_file,
         transformed_file=transformed_file
     )
     pipeline.run()

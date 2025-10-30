@@ -141,7 +141,10 @@ class DataLoader(BaseLoader):
                 self.logger.info(f"Loading strategy: {self.settings.LOAD_STRATEGY}")
                 
                 # Load each table
-                for table_name, records in tables.items():
+                for table_name, table_data in tables.items():
+                    # Get the actual records from the data array
+                    records = table_data.get('data', [])
+                    
                     if not records:
                         self.logger.warning(f"Table '{table_name}' has no records, skipping")
                         skipped_tables.append(table_name)

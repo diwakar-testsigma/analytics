@@ -56,7 +56,6 @@ class Settings:
     
     # Skip Configuration
     SKIP_EXTRACTION: bool = (os.getenv('SKIP_EXTRACTION') or '').lower() == 'true'
-    SKIP_PREPROCESSING: bool = (os.getenv('SKIP_PREPROCESSING') or '').lower() == 'true'
     SKIP_TRANSFORMATION: bool = (os.getenv('SKIP_TRANSFORMATION') or '').lower() == 'true'
     
     # Transformation Configuration

@@ -457,11 +457,9 @@ class SnowflakeDataSource(DataSource):
                 if missing_columns:
                     self.logger.info(f"Adding {len(missing_columns)} missing columns to {table_name}: {missing_columns}")
                 if type_mismatches:
-                    self.logger.info(f"Found type mismatches in {table_name}: {type_mismatches}")
-                    # For type mismatches, we need to recreate the table
-                    self.logger.info(f"Recreating table {table_name} due to type mismatches")
-                    self.cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                    return self.create_table_if_not_exists(table_name, sample_row)
+                    self.logger.warning(f"Found type mismatches in {table_name}: {type_mismatches}")
+                    # Log warning but continue - don't drop the table
+                    self.logger.warning(f"Type mismatches will be handled by Snowflake during COPY operation")
                 
                 # Add each missing column
                 for col_name in missing_columns:
@@ -487,14 +485,9 @@ class SnowflakeDataSource(DataSource):
             
         except Exception as e:
             self.logger.error(f"Failed to ensure schema for {table_name}: {e}")
-            # If we can't update schema, try to recreate the table
-            self.logger.info(f"Attempting to recreate table {table_name}")
-            try:
-                self.cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
-                return self.create_table_if_not_exists(table_name, sample_row)
-            except Exception as drop_e:
-                self.logger.error(f"Failed to recreate table {table_name}: {drop_e}")
-                raise
+            # Log error but continue - don't drop the table
+            self.logger.warning(f"Schema update failed for {table_name}, continuing with existing schema")
+            return True  # Continue with existing table structure
     
     def create_table_if_not_exists(self, table_name: str, sample_row: Dict[str, Any]) -> bool:
         """Create table in Snowflake if it doesn't exist using schema.sql"""
@@ -686,8 +679,8 @@ class SnowflakeDataSource(DataSource):
                 if "certificate" in error_msg.lower() or "254007" in error_msg:
                     # SSL certificate error - try alternative approach
                     self.logger.warning(f"SSL certificate error during PUT, trying alternative method: {error_msg}")
-                    # Fall back to regular INSERT for this batch
-                    return self._insert_batch_original(table_name, rows)
+                    # Fall back to direct COPY with CSV format
+                    return self._insert_batch_with_direct_copy(table_name, rows)
                 else:
                     raise
             
@@ -798,18 +791,9 @@ class SnowflakeDataSource(DataSource):
             return True
         
         try:
-            # Use COPY for large datasets (>500 rows) for better performance
-            COPY_THRESHOLD = int(os.getenv('SNOWFLAKE_COPY_THRESHOLD', '500'))
-            
-            if len(rows) >= COPY_THRESHOLD:
-                self.logger.info(f"Using COPY for {table_name} ({len(rows)} rows >= {COPY_THRESHOLD} threshold)")
-                return self._insert_batch_with_copy(table_name, rows)
-            
-            # Use regular INSERT for smaller datasets
-            self.logger.info(f"Using INSERT for {table_name} ({len(rows)} rows < {COPY_THRESHOLD} threshold)")
-            
-            # Get column names from first row
-            columns = list(rows[0].keys())
+            # Always use COPY for better performance
+            self.logger.info(f"Using COPY for {table_name} ({len(rows)} rows)")
+            return self._insert_batch_with_copy(table_name, rows)
             
             # Prepare values for bulk insert
             values_list = []
