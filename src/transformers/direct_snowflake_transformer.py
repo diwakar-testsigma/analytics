@@ -27,10 +27,15 @@ class BufferedTableWriter:
         self.tables_written = set()
         self.table_counts = {}
         self.first_table = True
+        self.last_written_table = None
         
     def start_table(self, table_name, record_count):
         """Start a new table section"""
         if table_name not in self.tables_written:
+            # Close previous table if there was one
+            if self.last_written_table and self.last_written_table != table_name:
+                self.close_table(self.last_written_table)
+                
             if not self.first_table:
                 self.outfile.write(',\n')
             self.first_table = False
@@ -51,11 +56,18 @@ class BufferedTableWriter:
             self.outfile.write('        ')
             json.dump(record, self.outfile, default=str)
             self.table_counts[table_name] += 1
+            self.last_written_table = table_name
     
     def close_table(self, table_name):
         """Close a table section"""
         if table_name in self.tables_written:
             self.outfile.write('\n      ]\n    }')
+            
+    def close_all_tables(self):
+        """Ensure all tables are properly closed"""
+        for table_name in self.tables_written:
+            # Tables are already closed in the main logic
+            pass
 
 
 def transform_to_snowflake(input_file: str, timestamp: str = None) -> str:
@@ -242,9 +254,9 @@ def transform_to_snowflake(input_file: str, timestamp: str = None) -> str:
                 for record in table_buffers[target_table]:
                     writer.write_record(target_table, record)
         
-        # Close all tables
-        for table_name in writer.tables_written:
-            writer.close_table(table_name)
+        # CRITICAL: Close the last written table
+        if writer.last_written_table:
+            writer.close_table(writer.last_written_table)
         
         # Close JSON structure
         outfile.write('\n  }\n}\n')
