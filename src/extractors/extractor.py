@@ -785,10 +785,19 @@ class DataExtractor(BaseExtractor):
                     cursorclass=pymysql.cursors.DictCursor
                 )
                 cursor = conn.cursor()
+                # Set UTF-8 for special tenant connection
+                cursor.execute("SET NAMES utf8mb4")
+                cursor.execute("SET CHARACTER SET utf8mb4")
+                cursor.execute("SET character_set_connection=utf8mb4")
             else:
                 conn = self.get_connection(self.config, database)
                 # Use DictCursor for table data extraction to get dictionaries
                 cursor = conn.cursor(pymysql.cursors.DictCursor)
+            
+            # Ensure UTF-8 encoding for all queries
+            cursor.execute("SET NAMES utf8mb4")
+            cursor.execute("SET CHARACTER SET utf8mb4")
+            cursor.execute("SET character_set_connection=utf8mb4")
             
             # Check if table has date column for filtering
             has_date_column, date_column = self._has_date_column(database, table_name)

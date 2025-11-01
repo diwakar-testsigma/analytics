@@ -159,25 +159,29 @@ MASTER_QUERIES = {
     
     "brg_tenant_features": """
         SELECT 
-            tf.tenant_id,
-            tf.id as feature_id,
+            CAST(tf.tenant_id AS SIGNED) as tenant_id,
+            CAST(tf.id AS SIGNED) as feature_id,
             tf.created_date as created_at,
             tf.updated_date as updated_at,
-            tf.id as tenant_feature_id,
-            tf.name as feature_name,
-            tf.is_add_on
+            CAST(tf.id AS SIGNED) as tenant_feature_id,
+            CAST(tf.name AS CHAR CHARACTER SET utf8mb4) as feature_name,
+            CAST(tf.is_add_on AS SIGNED) as is_add_on
         FROM tenant_features tf
+        WHERE tf.tenant_id IS NOT NULL
+        AND tf.id IS NOT NULL
     """,
     
     "dim_features": """
         SELECT DISTINCT
-            tf.id as feature_id,
-            tf.name,
-            tf.is_add_on as is_premium,
-            MIN(tf.tenant_id) as tenant_id,
+            CAST(tf.id AS SIGNED) as feature_id,
+            CAST(tf.name AS CHAR CHARACTER SET utf8mb4) as name,
+            CAST(tf.is_add_on AS SIGNED) as is_premium,
+            MIN(CAST(tf.tenant_id AS SIGNED)) as tenant_id,
             MIN(tf.created_date) as created_at,
             MAX(tf.updated_date) as updated_at
         FROM tenant_features tf
+        WHERE tf.id IS NOT NULL
+        AND tf.name IS NOT NULL
         GROUP BY tf.id, tf.name, tf.is_add_on
     """,
     
