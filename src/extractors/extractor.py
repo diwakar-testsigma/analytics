@@ -310,7 +310,8 @@ class DataExtractor(BaseExtractor):
                 all_databases.extend(identity_dbs)
                 self.logger.info(f"Found {len(identity_dbs)} identity database(s)")
             except Exception as e:
-                self.logger.warning(f"Failed to get identity databases: {e}")
+                self.logger.error(f"Failed to connect to identity database: {e}")
+                raise Exception(f"Identity database connection failed: {e}")
         
         if has_master:
             try:
@@ -318,7 +319,8 @@ class DataExtractor(BaseExtractor):
                 all_databases.extend(master_dbs)
                 self.logger.info(f"Found {len(master_dbs)} master database(s)")
             except Exception as e:
-                self.logger.warning(f"Failed to get master databases: {e}")
+                self.logger.error(f"Failed to connect to master database: {e}")
+                raise Exception(f"Master database connection failed: {e}")
         
         if has_tenant:
             try:
@@ -326,7 +328,8 @@ class DataExtractor(BaseExtractor):
                 all_databases.extend(tenant_dbs)
                 self.logger.info(f"Found {len(tenant_dbs)} tenant database(s)")
             except Exception as e:
-                self.logger.warning(f"Failed to get tenant databases: {e}")
+                self.logger.error(f"Failed to connect to tenant database: {e}")
+                raise Exception(f"Tenant database connection failed: {e}")
         
         # Remove duplicates while preserving order
         unique_databases = list(dict.fromkeys(all_databases))

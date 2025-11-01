@@ -9,13 +9,14 @@ import json
 import logging
 import gzip
 import ijson
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
-from src.transformers.direct_snowflake_transformer import transform_to_snowflake
+from src.transformers.transformer import transform_data_optimized
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags, update_transformation_state
@@ -302,8 +303,9 @@ class Pipeline:
             self.logger.info("-" * 60) 
             self.logger.info("Transforming directly to Snowflake format...")
             
-            # Transform with consistent timestamp
-            transformed_file = transform_to_snowflake(extracted_file, timestamp=self.job_id)
+            # Transform with consistent timestamp using optimized transformer
+            self.logger.info("Using optimized transformer for efficient processing")
+            transformed_file = transform_data_optimized(extracted_file, timestamp=self.job_id)
             
             # Update metrics without loading entire file
             table_counts, total_records = self._get_file_metrics_streaming(transformed_file)
