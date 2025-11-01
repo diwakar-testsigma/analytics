@@ -196,7 +196,6 @@ class PreJoinTransformer:
                             logger.warning(f"✗ Table {table_name} not found in regular transformation")
                 
                 # Clean up temp files
-                import os
                 os.unlink(temp_file)
                 os.unlink(regular_output)
                 

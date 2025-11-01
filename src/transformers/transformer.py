@@ -581,16 +581,32 @@ class FastTransformer:
             logger.info(f"  Estimated time: {estimated_hours:.1f} hours ({estimated_minutes_30m:.0f} minutes)")
             logger.info(f"  Estimated throughput: {30_000_000 / (estimated_seconds_30m * 1024 * 1024):.1f} MB/s")
             
-            # RAM usage estimates
+            # RAM usage estimates (realistic calculation)
             process = psutil.Process()
             current_ram_gb = process.memory_info().rss / 1024 / 1024 / 1024
-            records_per_gb = self.records_processed / current_ram_gb if current_ram_gb > 0 else 0
-            estimated_ram_30m = 30_000_000 / records_per_gb if records_per_gb > 0 else 0
             
-            logger.info(f"\n  RAM USAGE ESTIMATES:")
+            # Assume ~100MB base Python/library overhead
+            base_overhead_gb = 0.1
+            data_ram_gb = max(0, current_ram_gb - base_overhead_gb)
+            
+            # Calculate per-record memory (excluding base overhead)
+            if self.records_processed > 0:
+                ram_per_record_mb = (data_ram_gb * 1024) / self.records_processed
+            else:
+                ram_per_record_mb = 0
+            
+            # With batch processing, we only keep active batches in memory
+            active_records = min(self.batch_size * self.max_workers, 30_000_000)
+            estimated_data_ram_gb = (active_records * ram_per_record_mb) / 1024
+            estimated_total_ram_gb = base_overhead_gb + estimated_data_ram_gb
+            
+            logger.info(f"\n  RAM USAGE ESTIMATES (Batch Processing):")
             logger.info(f"  Current RAM: {current_ram_gb:.2f} GB for {self.records_processed:,} records")
-            logger.info(f"  Estimated RAM for 30M records: {estimated_ram_30m:.1f} GB")
-            logger.info(f"  Peak RAM (with overhead): {estimated_ram_30m * 1.5:.1f} GB")
+            logger.info(f"  Base overhead: {base_overhead_gb:.1f} GB")
+            logger.info(f"  Data per record: {ram_per_record_mb:.3f} MB")
+            logger.info(f"  Active records in memory: {active_records:,} (batch_size * workers)")
+            logger.info(f"  Estimated RAM usage: {estimated_total_ram_gb:.1f} GB")
+            logger.info(f"  Peak RAM (with safety margin): {estimated_total_ram_gb * 1.5:.1f} GB")
             logger.info("="*70)
             
         self.log_memory_usage("End")

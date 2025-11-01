@@ -1003,13 +1003,13 @@ class DataExtractor(BaseExtractor):
                                     "records": len(pre_joined_data),
                                     "sample": pre_joined_data
                                 }
-                    if len(pre_joined_data) > 0:
-                        self.logger.info(f"Pre-joined {target_table}: {len(pre_joined_data)} records")
-                except Exception as e:
-                    # Only log errors if debug mode
-                    if os.getenv('DEBUG', '').lower() == 'true':
-                        self.logger.error(f"Failed to extract pre-joined data for {target_table}: {e}")
-                    # Continue processing - don't fail the pipeline
+                                if len(pre_joined_data) > 0:
+                                    self.logger.info(f"Pre-joined {target_table}: {len(pre_joined_data)} records")
+                        except Exception as e:
+                            # Only log errors if debug mode
+                            if os.getenv('DEBUG', '').lower() == 'true':
+                                self.logger.error(f"Failed to extract pre-joined data for {target_table}: {e}")
+                            # Continue processing - don't fail the pipeline
         
         return all_data
     
