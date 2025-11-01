@@ -187,6 +187,8 @@ class DataExtractor(BaseExtractor):
             'autocommit': True,
             'connect_timeout': 30,
             'read_timeout': 300,  # 5 minutes for large queries
+            'use_unicode': True,
+            'init_command': 'SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED'
         }
         
         # Add database if specified in URL or parameter
@@ -1014,8 +1016,8 @@ class DataExtractor(BaseExtractor):
         
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        with open(filepath, 'w') as f:
-            json.dump(output_data, f, default=str, indent=2)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(output_data, f, default=str, indent=2, ensure_ascii=False)
         
         return filepath
     
@@ -1220,8 +1222,8 @@ class DataExtractor(BaseExtractor):
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
         # Write without indentation for faster I/O (compact JSON)
-        with open(filepath, 'w') as f:
-            json.dump(consolidated_data, f, default=str, separators=(',', ':'))
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(consolidated_data, f, default=str, separators=(',', ':'), ensure_ascii=False)
         
         self.logger.info(f"Saved to: {filepath}")
         return filepath
