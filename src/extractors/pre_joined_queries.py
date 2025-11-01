@@ -429,7 +429,7 @@ TENANT_QUERIES = {
             er.updated_at_epoch
         FROM execution_result er
         LEFT JOIN execution e ON er.execution_id = e.id
-        LEFT JOIN application_version av ON e.application_version_id = av.id
+        LEFT JOIN application_version av ON er.application_version_id = av.id
     """,
     
     "fct_test_steps": """
@@ -467,24 +467,7 @@ TENANT_QUERIES = {
             ntcs.block_id,
             ntcs.kibbutz_plugin_nlp_data,
             ntcs.kibbutz_plugin_tdf_data,
-            ntcs.kibbutz_nlp_data_map,
-            ntcs.kibbutz_tdf_data_map,
-            ntcs.data_source_id,
-            ntcs.iteration_data_type_enum,
-            ntcs.mobile_step_action,
-            ntcs.mobile_test_data,
-            ntcs.mobile_input,
-            ntcs.mobile_element,
-            ntcs.platform,
-            ntcs.type_override,
-            ntcs.wait_time_override,
-            ntcs.data_map_override,
-            ntcs.parent_id_override,
-            ntcs.natural_text_action,
-            ntcs.natural_text_action_type,
-            ntcs.rest_api_nlp_data,
-            ntcs.original_step_id,
-            ntcs.exception_is_expected_json,
+            -- Removed non-existent columns: kibbutz_nlp_data_map, kibbutz_tdf_data_map, and others
             ntcs.entity_version,
             ntcs.original_entity_id,
             ntcs.created_by_id,
@@ -498,23 +481,23 @@ TENANT_QUERIES = {
     
     "dim_test_suites": """
         SELECT 
-            ts.id as test_suite_id,
-            ts.tsid as test_suite_tsid,
-            ts.name,
-            ts.description,
-            ts.tenant_tsid,
-            ts.project_id,
-            ts.application_version_id,
+            tcg.id as test_suite_id,
+            tcg.tsid as test_suite_tsid,
+            tcg.name,
+            tcg.description,
+            tcg.tenant_tsid,
+            tcg.project_id,
+            tcg.app_version_id as application_version_id,
             av.application_id as app_id,
-            ts.is_disabled,
-            ts.created_by_id,
-            ts.updated_by_id,
-            ts.created_date as created_at,
-            ts.updated_date as updated_at,
-            ts.created_at_epoch,
-            ts.updated_at_epoch
-        FROM test_suite ts
-        LEFT JOIN application_version av ON ts.application_version_id = av.id
+            tcg.is_disabled,
+            tcg.created_by_id,
+            tcg.updated_by_id,
+            tcg.created_date as created_at,
+            tcg.updated_date as updated_at,
+            tcg.created_at_epoch,
+            tcg.updated_at_epoch
+        FROM test_case_group tcg
+        LEFT JOIN application_version av ON tcg.app_version_id = av.id
     """,
     
     "fct_test_results": """
@@ -559,14 +542,14 @@ TENANT_QUERIES = {
             tr.updated_date as updated_at,
             tr.created_at_epoch,
             tr.updated_at_epoch
-        FROM test_result tr
+        FROM test_case_result tr
     """,
     
     "dim_test_data": """
         SELECT 
             td.id as test_data_id,
             td.tsid as test_data_tsid,
-            td.name,
+            td.test_data_name as name,
             td.tenant_tsid,
             td.description,
             td.last_used_at_epoch,
@@ -596,7 +579,7 @@ TENANT_QUERIES = {
             a.updated_date as updated_at,
             a.created_at_epoch,
             a.updated_at_epoch
-        FROM agent a
+        FROM agents a
     """,
     
     "fct_agent_activity": """
@@ -618,18 +601,33 @@ TENANT_QUERIES = {
     
     "fct_audit_events": """
         SELECT 
-            ae.id as event_id,
-            ae.tsid as event_tsid,
-            ae.tenant_tsid,
-            ae.user_id,
-            ae.event_type,
-            ae.event_data_json,
-            ae.event_time,
-            ae.created_date as created_at,
-            ae.updated_date as updated_at,
-            ae.created_at_epoch,
-            ae.updated_at_epoch
-        FROM audit_event ae
+            ah.id as event_id,
+            ah.tsid as event_tsid,
+            ah.uuid as event_uuid,
+            ah.tenant_tsid,
+            ah.entity_tag,
+            ah.entity_model as entity_type,
+            ah.entity_parent_id,
+            ah.entity_id,
+            ah.entity_action as action,
+            ah.previous_entity_data,
+            ah.new_entity_data,
+            ah.transform_context as changes_json,
+            ah.actor_id,
+            ah.actor_account_uuid,
+            ah.actor_uuid,
+            ah.client_ip_address as ip_address,
+            ah.action_date as timestamp,
+            ah.custom_fields,
+            ah.status,
+            ah.message,
+            ah.created_by_id,
+            ah.updated_by_id,
+            ah.created_date as created_at,
+            ah.updated_date as updated_at,
+            ah.created_at_epoch,
+            ah.updated_at_epoch
+        FROM audit_history ah
     """,
     
     "dim_elements": """

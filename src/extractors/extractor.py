@@ -849,8 +849,26 @@ class DataExtractor(BaseExtractor):
             # PyMySQL already returns proper dictionaries, no conversion needed
             return results if results else []
             
+        except UnicodeDecodeError as e:
+            # Handle encoding errors gracefully
+            if os.getenv('DEBUG', '').lower() == 'true':
+                self.logger.warning(f"Encoding error in {database}.{table_name} at offset {offset}, skipping batch: {e}")
+            return []
+        except pymysql.err.OperationalError as e:
+            # Handle connection errors
+            if "Unknown column" in str(e) or "doesn't exist" in str(e):
+                # Schema mismatch - continue
+                if os.getenv('DEBUG', '').lower() == 'true':
+                    self.logger.warning(f"Schema issue in {database}.{table_name}: {e}")
+                return []
+            else:
+                # Serious connection error - log it
+                self.logger.error(f"Connection error extracting {database}.{table_name}: {e}")
+                return []
         except Exception as e:
-            self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
+            # Only log unexpected errors in debug mode
+            if os.getenv('DEBUG', '').lower() == 'true':
+                self.logger.error(f"Error extracting batch from {database}.{table_name} at offset {offset}: {e}")
             return []
         finally:
             # Always close cursor
@@ -914,7 +932,10 @@ class DataExtractor(BaseExtractor):
                     data = future.result()
                     all_data.extend(data)
                 except Exception as e:
-                    self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
+                    # Log only in debug mode
+                    if os.getenv('DEBUG', '').lower() == 'true':
+                        self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
+                    # Continue with other batches
         
         return all_data
     
@@ -928,7 +949,9 @@ class DataExtractor(BaseExtractor):
         Returns:
             Enhanced data dictionary with pre-joined data for target tables
         """
-        self.logger.info("Starting pre-joined extraction for target tables...")
+        # Only log in debug mode
+        if os.getenv('DEBUG', '').lower() == 'true':
+            self.logger.info("Starting pre-joined extraction for target tables...")
         
         # Import transformation mappings to know which tables need pre-joins
         from src.transformers.transformation_mapping import ALL_MAPPINGS
@@ -963,7 +986,9 @@ class DataExtractor(BaseExtractor):
                     )
                     
                     if all_sources_exist:
-                        self.logger.info(f"Extracting pre-joined data for {target_table} from {db_name}")
+                        # Only log in debug mode
+                        if os.getenv('DEBUG', '').lower() == 'true':
+                            self.logger.info(f"Extracting pre-joined data for {target_table} from {db_name}")
                         
                         # Extract pre-joined data
                         try:
@@ -978,9 +1003,13 @@ class DataExtractor(BaseExtractor):
                                     "records": len(pre_joined_data),
                                     "sample": pre_joined_data
                                 }
-                                self.logger.info(f"Pre-joined {target_table}: {len(pre_joined_data)} records")
-                        except Exception as e:
-                            self.logger.error(f"Failed to extract pre-joined data for {target_table}: {e}")
+                    if len(pre_joined_data) > 0:
+                        self.logger.info(f"Pre-joined {target_table}: {len(pre_joined_data)} records")
+                except Exception as e:
+                    # Only log errors if debug mode
+                    if os.getenv('DEBUG', '').lower() == 'true':
+                        self.logger.error(f"Failed to extract pre-joined data for {target_table}: {e}")
+                    # Continue processing - don't fail the pipeline
         
         return all_data
     
@@ -1068,7 +1097,10 @@ class DataExtractor(BaseExtractor):
                     tables_with_data += 1
                     
             except Exception as e:
-                self.logger.error(f"Failed to extract {database}.{table}: {e}")
+                # Only log errors if debug mode or it's a critical table
+                if os.getenv('DEBUG', '').lower() == 'true' or table in REQUIRED_TABLES:
+                    self.logger.error(f"Failed to extract {database}.{table}: {e}")
+                # Continue with next table - don't fail the pipeline
         
         return database_data
     
@@ -1198,7 +1230,9 @@ class DataExtractor(BaseExtractor):
         
         # Add pre-joined extraction for transformation targets
         if self.config.get('enable_pre_joins', True):
-            self.logger.info("\n🔗 Starting pre-joined extraction for transformation targets...")
+            # Only log in debug mode
+            if os.getenv('DEBUG', '').lower() == 'true':
+                self.logger.info("\n🔗 Starting pre-joined extraction for transformation targets...")
             consolidated_data = self.extract_pre_joined_data(consolidated_data)
         
         return self.save_consolidated_json(consolidated_data)

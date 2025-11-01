@@ -189,9 +189,11 @@ class PreJoinTransformer:
                 for table_name in missing_tables:
                     if table_name in regular_data.get('tables', {}):
                         transformed_data['tables'][table_name] = regular_data['tables'][table_name]
-                        logger.info(f"✓ Transformed {table_name}: {regular_data['tables'][table_name]['records']} records")
+                        if os.getenv('DEBUG', '').lower() == 'true':
+                            logger.info(f"✓ Transformed {table_name}: {regular_data['tables'][table_name]['records']} records")
                     else:
-                        logger.warning(f"✗ Table {table_name} not found in regular transformation")
+                        if os.getenv('DEBUG', '').lower() == 'true':
+                            logger.warning(f"✗ Table {table_name} not found in regular transformation")
                 
                 # Clean up temp files
                 import os
