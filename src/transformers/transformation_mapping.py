@@ -317,7 +317,7 @@ TENANT_MAPPINGS = {
             "name": "test_case.name",
             "description": "test_case.description",
             "tenant_tsid": "test_case.tenant_tsid",
-            "priority_id": "test_case.proirity_id",
+            "priority_id": "test_case.priority_id",
             "priority": "test_case_priorities.name",
             "type": "test_case.type",
             "application_version_id": "test_case.application_version_id",
@@ -345,7 +345,7 @@ TENANT_MAPPINGS = {
             "draft_at": "test_case.draft_at",
             "draft_by": "test_case.draft_by",
             "obsolete_by": "test_case.obsolete_by",
-            "obsolete_at": "test_case.obsolete_At",
+            "obsolete_at": "test_case.obsolete_at",
             "ready_at": "test_case.ready_at",
             "ready_by": "test_case.ready_by",
             "has_after_test": "test_case.has_after_test",
@@ -593,16 +593,17 @@ TENANT_MAPPINGS = {
         "primary_key": "test_data_id",
         "column_mappings": {
             "test_data_id": "test_data.id",
-            "test_data_uuid": "test_data.tsid",
+            "test_data_tsid": "test_data.tsid",
             "name": "test_data.test_data_name",
-            "data_json": "test_data.columns",
-            "app_id": "test_data.version_id",
-            "tenant_id": "test_data.tenant_tsid",
+            "tenant_tsid": "test_data.tenant_tsid",
+            "description": "test_data.description",
+            "last_used_at_epoch": "test_data.last_used_at_epoch",
             "created_by_id": "test_data.created_by_id",
             "updated_by_id": "test_data.updated_by_id",
             "created_at": "test_data.created_date",
             "updated_at": "test_data.updated_date",
-            "data_id": "test_data.id"
+            "created_at_epoch": "test_data.created_at_epoch",
+            "updated_at_epoch": "test_data.updated_at_epoch"
         }
     },
     
@@ -809,6 +810,123 @@ TENANT_MAPPINGS = {
             "updated_at": "audit_history.updated_date",
             "created_at_epoch": "audit_history.created_at_epoch",
             "updated_at_epoch": "audit_history.updated_at_epoch"
+        }
+    },
+    
+    "dim_elements": {
+        "source_tables": ["element"],
+        "primary_key": "element_id",
+        "column_mappings": {
+            "element_id": "element.id",
+            "element_tsid": "element.tsid",
+            "name": "element.name",
+            "tenant_tsid": "element.tenant_tsid",
+            "application_version_id": "element.application_version_id",
+            "screen_name": "element.screen_name",
+            "locator_type": "element.locator_type",
+            "locator_value": "element.locator_value",
+            "created_by_id": "element.created_by_id",
+            "updated_by_id": "element.updated_by_id",
+            "created_at": "element.created_date",
+            "updated_at": "element.updated_date",
+            "created_at_epoch": "element.created_at_epoch",
+            "updated_at_epoch": "element.updated_at_epoch"
+        }
+    },
+    
+    "fct_agent_activity": {
+        "source_tables": ["agent_logs"],
+        "primary_key": "activity_id",
+        "column_mappings": {
+            "activity_id": "agent_logs.id",
+            "activity_tsid": "agent_logs.tsid",
+            "agent_id": "agent_logs.agent_id",
+            "tenant_tsid": "agent_logs.tenant_tsid",
+            "test_result_id": "agent_logs.test_result_id",
+            "start_time": "agent_logs.start_time",
+            "end_time": "agent_logs.end_time",
+            "action": "agent_logs.action",
+            "created_at": "agent_logs.created_date",
+            "updated_at": "agent_logs.updated_date",
+            "created_at_epoch": "agent_logs.created_at_epoch",
+            "updated_at_epoch": "agent_logs.updated_at_epoch"
+        }
+    },
+    
+    "fct_api_steps": {
+        "source_tables": ["api_step"],
+        "primary_key": "api_step_id",
+        "column_mappings": {
+            "api_step_id": "api_step.id",
+            "api_step_tsid": "api_step.tsid",
+            "test_result_id": "api_step.test_result_id",
+            "tenant_tsid": "api_step.tenant_tsid",
+            "step_order": "api_step.step_order",
+            "request_url": "api_step.request_url",
+            "request_method": "api_step.request_method",
+            "response_status": "api_step.response_status",
+            "response_time": "api_step.response_time",
+            "created_at": "api_step.created_date",
+            "updated_at": "api_step.updated_date",
+            "created_at_epoch": "api_step.created_at_epoch",
+            "updated_at_epoch": "api_step.updated_at_epoch"
+        }
+    },
+    
+    "fct_accessibility_results": {
+        "source_tables": ["accessibility_result"],
+        "primary_key": "accessibility_result_id",
+        "column_mappings": {
+            "accessibility_result_id": "accessibility_result.id",
+            "accessibility_result_tsid": "accessibility_result.tsid",
+            "test_result_id": "accessibility_result.test_result_id",
+            "tenant_tsid": "accessibility_result.tenant_tsid",
+            "rule_id": "accessibility_result.rule_id",
+            "impact": "accessibility_result.impact",
+            "help_url": "accessibility_result.help_url",
+            "created_at": "accessibility_result.created_date",
+            "updated_at": "accessibility_result.updated_date",
+            "created_at_epoch": "accessibility_result.created_at_epoch",
+            "updated_at_epoch": "accessibility_result.updated_at_epoch"
+        }
+    },
+    
+    "fct_test_plan_results": {
+        "source_tables": ["test_plan_result"],
+        "primary_key": "test_plan_result_id",
+        "column_mappings": {
+            "test_plan_result_id": "test_plan_result.id",
+            "test_plan_result_tsid": "test_plan_result.tsid",
+            "test_plan_id": "test_plan_result.test_plan_id",
+            "tenant_tsid": "test_plan_result.tenant_tsid",
+            "execution_result_id": "test_plan_result.execution_result_id",
+            "start_time": "test_plan_result.start_time",
+            "end_time": "test_plan_result.end_time",
+            "duration": "test_plan_result.duration",
+            "result": "test_plan_result.result",
+            "created_at": "test_plan_result.created_date",
+            "updated_at": "test_plan_result.updated_date",
+            "created_at_epoch": "test_plan_result.created_at_epoch",
+            "updated_at_epoch": "test_plan_result.updated_at_epoch"
+        }
+    },
+    
+    "fct_cross_tenant_metrics": {
+        "source_tables": ["cross_tenant_metrics"],
+        "primary_key": "metric_id",
+        "column_mappings": {
+            "metric_id": "cross_tenant_metrics.id",
+            "metric_tsid": "cross_tenant_metrics.tsid",
+            "tenant_id": "cross_tenant_metrics.tenant_id",
+            "metric_date": "cross_tenant_metrics.metric_date",
+            "total_users": "cross_tenant_metrics.total_users",
+            "active_users": "cross_tenant_metrics.active_users",
+            "total_test_cases": "cross_tenant_metrics.total_test_cases",
+            "total_executions": "cross_tenant_metrics.total_executions",
+            "created_at": "cross_tenant_metrics.created_date",
+            "updated_at": "cross_tenant_metrics.updated_date",
+            "created_at_epoch": "cross_tenant_metrics.created_at_epoch",
+            "updated_at_epoch": "cross_tenant_metrics.updated_at_epoch"
         }
     }
 }

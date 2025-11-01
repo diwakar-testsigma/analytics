@@ -33,6 +33,9 @@ def process_record_batch_simple(args: Tuple[List[Dict], Dict, str, int, int]) ->
     records, column_mappings, etl_timestamp, batch_id, table_id = args
     results = []
     
+    # Boolean fields that need conversion (shared with SimpleTransformer)
+    BOOLEAN_FIELDS = SimpleTransformer.BOOLEAN_FIELDS
+    
     for record in records:
         transformed = {'etl_timestamp': etl_timestamp}
         
@@ -47,6 +50,9 @@ def process_record_batch_simple(args: Tuple[List[Dict], Dict, str, int, int]) ->
             # Fast value cleaning
             if value is None:
                 transformed[target_field] = None
+            elif target_field in BOOLEAN_FIELDS and value in (0, 1):
+                # Convert 0/1 to boolean for boolean fields
+                transformed[target_field] = bool(value)
             elif isinstance(value, (dict, list)):
                 transformed[target_field] = json.dumps(value)
             elif isinstance(value, str) and value.startswith("b'\\x"):
@@ -66,10 +72,48 @@ def process_record_batch_simple(args: Tuple[List[Dict], Dict, str, int, int]) ->
 class SimpleTransformer:
     """Base transformer with all transformation logic"""
     
+    # Boolean fields that need 0/1 to true/false conversion
+    BOOLEAN_FIELDS = {
+        # dim_users
+        'deleted', 'is_2fa_enabled', 'join_confirmed', 'is_account_owner', 'account_deleted',
+        # dim_accounts  
+        'auth_enabled',
+        # dim_tenants
+        'is_play_ground', 'is_beta', 'skip_support_channel_notifications', 
+        'report_customization_enabled', 'subscribed_to_emails', 'block_access',
+        # brg_tenant_features & dim_features
+        'is_add_on', 'is_premium',
+        # dim_data_generators
+        'has_data_map',
+        # dim_nlp_templates  
+        'snippet_enabled', 'deprecated', 'is_actionable', 'is_verifiable',
+        'import_to_web', 'import_to_mobile_web', 'import_to_android_native',
+        'import_to_ios_native', 'import_to_rest_native', 'import_to_salesforce', 'api_supported',
+        # dim_projects
+        'has_multiple_apps', 'has_multiple_versions', 'demo',
+        # dim_test_cases
+        'is_data_driven', 'is_step_group', 'is_ai_generated', 'is_manual', 'is_active',
+        'is_reviewed', 'is_prerequisite_case', 'is_under_deletion', 'has_error',
+        'has_after_test', 'is_eligible_for_after_suite', 'consider_visual_test_result', 'delete_marker',
+        # fct_test_steps
+        'disabled', 'visual_enabled', 'accessibility_enabled', 'ignore_step_result', 'is_invalid',
+        # fct_executions
+        'slack_connector_notification_enabled', 'ms_teams_connector_notification_enabled',
+        'google_chat_connector_notification_enabled', 'accessibility_test_enabled',
+        'is_inprogress', 'run_test_cases_in_parallel', 'run_test_suites_in_parallel', 'is_visually_passed',
+        # fct_test_results
+        'is_queued', 'is_migrated_execution',
+        # dim_agents
+        'enabled', 'visible_to_all', 'mobile_enabled', 'is_active', 'is_docker', 
+        'is_service', 'is_obsolete', 'go_ios_enabled',
+        # dim_applications
+        'is_disabled'
+    }
+    
     def __init__(self):
         self.all_mappings = transformation_mappings
-        
-    def clean_value(self, value: Any) -> Any:
+    
+    def clean_value(self, value: Any, field_name: str = None) -> Any:
         """Clean and handle null values"""
         if value is None:
             return None
@@ -82,6 +126,14 @@ class SimpleTransformer:
             if value.strip() == "":
                 return None
             return value.strip()
+        # Convert 0/1 to false/true for boolean fields
+        if field_name and field_name in self.BOOLEAN_FIELDS:
+            if value == 0:
+                return False
+            elif value == 1:
+                return True
+            # For any other value (like already boolean), return as is
+            return bool(value) if value is not None else None
         if isinstance(value, (dict, list)):
             # Convert dict/list to JSON string for database storage
             return json.dumps(value)
@@ -129,7 +181,7 @@ class SimpleTransformer:
         
         for target_col, source_path in column_mappings.items():
             value = self.get_value_from_path(source_record, source_path, source_data_map, record_index)
-            cleaned_value = self.clean_value(value)
+            cleaned_value = self.clean_value(value, target_col)
             
             # Handle specific columns that should have defaults
             if cleaned_value is None:
@@ -465,7 +517,15 @@ class FastTransformer:
             all_table_data = self.load_all_data(input_file)
         
         # Process all tables
-        etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # Convert job_id format to proper timestamp if needed
+        if timestamp and '_' in timestamp and len(timestamp) == 15:
+            try:
+                dt = datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+                etl_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         transformed_data = {"tables": {}}
         
         # Batch tables for parallel processing
@@ -573,7 +633,15 @@ class FastTransformer:
         logger.info(f"Data loaded in {load_time:.1f}s: {len(all_data)} tables, {sum(len(v) for v in all_data.values()):,} records")
         self.log_memory_usage("After loading data")
         
-        etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        # Convert job_id format to proper timestamp if needed
+        if timestamp and '_' in timestamp and len(timestamp) == 15:
+            try:
+                dt = datetime.strptime(timestamp, "%Y%m%d_%H%M%S")
+                etl_timestamp = dt.strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            etl_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         transformed_data = {"tables": {}}
         
         # Process all tables using loaded data

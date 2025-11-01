@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from src.extractors.extractor import DataExtractor
 from src.loaders.loader import DataLoader
 from src.transformers.transformer import transform_data_optimized
+from src.transformers.pre_join_transformer import transform_with_pre_joins
 from src.config import settings
 from src.notifications import notifier
 from src.utils.env_updater import update_extraction_state, reset_skip_flags, update_transformation_state
@@ -303,9 +304,28 @@ class Pipeline:
             self.logger.info("-" * 60) 
             self.logger.info("Transforming directly to Snowflake format...")
             
-            # Transform with consistent timestamp using optimized transformer
-            self.logger.info("Using optimized transformer for efficient processing")
-            transformed_file = transform_data_optimized(extracted_file, timestamp=self.job_id)
+            # Check if extracted data has pre-joined data
+            has_pre_joins = False
+            try:
+                with open(extracted_file, 'r') as f:
+                    # Quick check for pre-joined data
+                    import json
+                    data = json.load(f)
+                    for db_name, db_data in data.items():
+                        if isinstance(db_data, dict) and db_name != 'extraction_metadata':
+                            if any(k.startswith('_prejoined_') for k in db_data.keys()):
+                                has_pre_joins = True
+                                break
+            except:
+                pass
+            
+            # Transform with appropriate method
+            if has_pre_joins:
+                self.logger.info("Using PRE-JOIN transformer (fast and accurate!)")
+                transformed_file = transform_with_pre_joins(extracted_file, timestamp=self.job_id)
+            else:
+                self.logger.info("Using optimized transformer (no pre-joins found)")
+                transformed_file = transform_data_optimized(extracted_file, timestamp=self.job_id)
             
             # Update metrics without loading entire file
             table_counts, total_records = self._get_file_metrics_streaming(transformed_file)

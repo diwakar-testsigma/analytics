@@ -22,6 +22,7 @@ import threading
 from .base import BaseExtractor
 from .extraction_mapping import REQUIRED_TABLES, SKIP_TABLES, should_extract_table
 from .static_tables import is_static_table
+from .pre_joined_queries import get_query_for_table
 
 
 class DataExtractor(BaseExtractor):
@@ -669,7 +670,7 @@ class DataExtractor(BaseExtractor):
                 except:
                     pass
     
-    def get_table_count(self, database: str, table_name: str) -> int:
+    def get_table_count(self, database: str, table_name: str, use_pre_join: bool = False, db_type: str = None) -> int:
         """Get row count for a table with optional date filtering - optimized"""
         conn = None
         cursor = None
@@ -687,6 +688,16 @@ class DataExtractor(BaseExtractor):
             skip_date_filter = is_static_table(table_name)
             if skip_date_filter and has_date_column and (start_date or end_date):
                 self.logger.debug(f"Skipping date filter for static table: {table_name}")
+            
+            # Handle pre-joined queries differently
+            if use_pre_join and db_type:
+                pre_join_query = get_query_for_table(table_name, db_type)
+                if pre_join_query:
+                    # For pre-joined queries, we need to count the result set
+                    count_query = f"SELECT COUNT(*) FROM ({pre_join_query}) AS joined_data"
+                    cursor.execute(count_query)
+                    result = cursor.fetchone()
+                    return result[0] if result else 0
             
             if has_date_column and (start_date or end_date) and not skip_date_filter:
                 # For large tables with date filtering, use approximate count if possible
@@ -743,7 +754,7 @@ class DataExtractor(BaseExtractor):
                 except:
                     pass
     
-    def extract_table_batch(self, database: str, table_name: str, offset: int) -> List[Dict[str, Any]]:
+    def extract_table_batch(self, database: str, table_name: str, offset: int, use_pre_join: bool = False, db_type: str = None) -> List[Dict[str, Any]]:
         """Extract a batch of rows from a table with optional date filtering"""
         conn = None
         cursor = None
@@ -788,17 +799,38 @@ class DataExtractor(BaseExtractor):
             if skip_date_filter and has_date_column and (start_date or end_date):
                 self.logger.debug(f"Skipping date filter for static table: {table_name}")
             
-            if has_date_column and (start_date or end_date) and not skip_date_filter:
-                # Use date filtering
-                base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
-                query, params = self._build_date_filter_query(table_name, base_query, date_column)
-                # Add LIMIT and OFFSET parameters
-                params.extend([self.config['extraction']['batch_size'], offset])
-                cursor.execute(query, params)
-            else:
-                # No date filtering - extract all data
-                query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
-                cursor.execute(query, (self.config['extraction']['batch_size'], offset))
+            # Check if we should use pre-joined query
+            if use_pre_join and db_type:
+                pre_join_query = get_query_for_table(table_name, db_type)
+                if pre_join_query:
+                    # Use pre-joined query
+                    if has_date_column and (start_date or end_date) and not skip_date_filter:
+                        # Add date filtering to pre-joined query
+                        base_query = f"({pre_join_query}) AS joined_data LIMIT %s OFFSET %s"
+                        query, params = self._build_date_filter_query('joined_data', base_query, date_column)
+                        params.extend([self.config['extraction']['batch_size'], offset])
+                        cursor.execute(query, params)
+                    else:
+                        # No date filtering - use pre-joined query as is
+                        query = f"{pre_join_query} LIMIT %s OFFSET %s"
+                        cursor.execute(query, (self.config['extraction']['batch_size'], offset))
+                else:
+                    # Fall back to regular extraction if no pre-join query found
+                    use_pre_join = False
+            
+            if not use_pre_join:
+                # Regular extraction (no pre-join)
+                if has_date_column and (start_date or end_date) and not skip_date_filter:
+                    # Use date filtering
+                    base_query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
+                    query, params = self._build_date_filter_query(table_name, base_query, date_column)
+                    # Add LIMIT and OFFSET parameters
+                    params.extend([self.config['extraction']['batch_size'], offset])
+                    cursor.execute(query, params)
+                else:
+                    # No date filtering - extract all data
+                    query = f"SELECT * FROM {table_name} LIMIT %s OFFSET %s"
+                    cursor.execute(query, (self.config['extraction']['batch_size'], offset))
             
             # Fetch all results - PyMySQL handles None values properly
             results = cursor.fetchall()
@@ -825,21 +857,21 @@ class DataExtractor(BaseExtractor):
             # Note: Don't close pooled connections here
             # They will be reused by other threads
     
-    def extract_table_data(self, database: str, table_name: str) -> List[Dict[str, Any]]:
+    def extract_table_data(self, database: str, table_name: str, use_pre_join: bool = False, db_type: str = None) -> List[Dict[str, Any]]:
         """Extract all data from a table - optimized for speed and stability"""
         # Quick check: Use extraction mapping to determine if table should be extracted
         # Tables in SKIP_TABLES are not required by transformation mappings
         if not should_extract_table(table_name):
             return []
         
-        total_rows = self.get_table_count(database, table_name)
+        total_rows = self.get_table_count(database, table_name, use_pre_join, db_type)
         
         if total_rows == 0:
             return []
         
         # For small tables (<10k rows), extract in single batch (faster, no threading overhead)
         if total_rows < 10000:
-            return self.extract_table_batch(database, table_name, 0)
+            return self.extract_table_batch(database, table_name, 0, use_pre_join, db_type)
         
         # For large tables, use parallel extraction with optimized worker count
         all_data = []
@@ -861,7 +893,7 @@ class DataExtractor(BaseExtractor):
         # Use ThreadPoolExecutor for parallel extraction
         with ThreadPoolExecutor(max_workers=optimal_workers) as executor:
             future_to_offset = {
-                executor.submit(self.extract_table_batch, database, table_name, offset): offset 
+                executor.submit(self.extract_table_batch, database, table_name, offset, use_pre_join, db_type): offset 
                 for offset in offsets
             }
             
@@ -872,6 +904,72 @@ class DataExtractor(BaseExtractor):
                     all_data.extend(data)
                 except Exception as e:
                     self.logger.error(f"Failed to extract batch at offset {offset}: {e}")
+        
+        return all_data
+    
+    def extract_pre_joined_data(self, all_data: Dict[str, Dict]) -> Dict[str, Dict]:
+        """
+        Extract data with pre-joins for target tables that need them
+        
+        Args:
+            all_data: Dictionary containing already extracted raw data
+            
+        Returns:
+            Enhanced data dictionary with pre-joined data for target tables
+        """
+        self.logger.info("Starting pre-joined extraction for target tables...")
+        
+        # Import transformation mappings to know which tables need pre-joins
+        from src.transformers.transformation_mapping import ALL_MAPPINGS
+        
+        # Process each database type
+        for db_name, db_data in all_data.items():
+            if isinstance(db_data, dict) and db_name != 'extraction_metadata':
+                # Determine database type
+                if db_name == 'identity':
+                    db_type = 'identity'
+                elif db_name == 'master':
+                    db_type = 'master'
+                elif db_name.startswith('tenant'):
+                    db_type = 'tenant'
+                else:
+                    continue
+                
+                # For each target table in mappings
+                for target_table, mapping in ALL_MAPPINGS.items():
+                    # Check if this target table needs data from this database
+                    source_tables = mapping.get('source_tables', [])
+                    
+                    # Only process if we have pre-join query for this table
+                    pre_join_query = get_query_for_table(target_table, db_type)
+                    if not pre_join_query:
+                        continue
+                    
+                    # Check if all source tables exist in this database
+                    all_sources_exist = all(
+                        source_table in db_data 
+                        for source_table in source_tables
+                    )
+                    
+                    if all_sources_exist:
+                        self.logger.info(f"Extracting pre-joined data for {target_table} from {db_name}")
+                        
+                        # Extract pre-joined data
+                        try:
+                            pre_joined_data = self.extract_table_data(
+                                db_name, target_table, 
+                                use_pre_join=True, db_type=db_type
+                            )
+                            
+                            if pre_joined_data:
+                                # Add pre-joined data with special key
+                                db_data[f"_prejoined_{target_table}"] = {
+                                    "records": len(pre_joined_data),
+                                    "sample": pre_joined_data
+                                }
+                                self.logger.info(f"Pre-joined {target_table}: {len(pre_joined_data)} records")
+                        except Exception as e:
+                            self.logger.error(f"Failed to extract pre-joined data for {target_table}: {e}")
         
         return all_data
     
@@ -1086,6 +1184,11 @@ class DataExtractor(BaseExtractor):
         self.logger.info(f"Duration: {duration:.1f}s")
         self.logger.info(f"Speed: {total_records/duration if duration > 0 else 0:,.0f} records/sec")
         self.logger.info("=" * 60)
+        
+        # Add pre-joined extraction for transformation targets
+        if self.config.get('enable_pre_joins', True):
+            self.logger.info("\n🔗 Starting pre-joined extraction for transformation targets...")
+            consolidated_data = self.extract_pre_joined_data(consolidated_data)
         
         return self.save_consolidated_json(consolidated_data)
     
