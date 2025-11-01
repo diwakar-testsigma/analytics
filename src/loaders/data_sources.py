@@ -255,6 +255,35 @@ class SQLiteDataSource(DataSource):
 class SnowflakeDataSource(DataSource):
     """Snowflake data source implementation"""
     
+    # Tables that might have updates and need deduplication
+    # Format: table_name: (primary_key, timestamp_field_for_ordering)
+    DEDUP_TABLES = {
+        'dim_users': ('user_id', 'updated_at'),
+        'dim_organizations': ('organization_id', 'updated_at'),
+        'dim_accounts': ('account_id', 'updated_at'),
+        'dim_tenants': ('tenant_id', 'updated_at'),
+        'brg_tenant_features': ('tenant_id,feature_id', 'updated_at'),
+        'dim_features': ('feature_id', 'updated_at'),
+        'dim_data_generators': ('generator_id', 'updated_at_epoch'),  # Uses BIGINT epoch
+        'dim_nlp_templates': ('template_id', 'updated_at_epoch'),  # Uses BIGINT epoch
+        'dim_projects': ('project_id', 'updated_at'),
+        'dim_applications': ('app_id', 'updated_at'),
+        'dim_test_cases': ('test_case_id', 'updated_at'),
+        'fct_test_steps': ('step_id', 'updated_at'),
+        'fct_executions': ('execution_id', 'end_time'),  # Uses end_time not updated_at
+        'fct_test_results': ('result_id', 'end_time'),  # Uses end_time not updated_at
+        'dim_elements': ('element_id', 'updated_at'),
+        'dim_test_data': ('test_data_id', 'updated_at'),
+        'dim_agents': ('agent_id', 'updated_at'),
+        'fct_api_steps': ('api_step_id', 'updated_at'),
+        'fct_accessibility_results': ('accessibility_result_id', 'updated_at'),
+        'dim_test_suites': ('test_suite_id', 'updated_at'),
+        'fct_cross_tenant_metrics': ('metric_id', 'updated_at'),
+        'fct_test_plan_results': ('test_plan_result_id', 'end_time'),  # Uses end_time
+        'fct_agent_activity': ('activity_id', 'updated_at'),
+        'fct_audit_events': ('event_id', 'timestamp')  # Uses timestamp field
+    }
+    
     def __init__(self, connection_url: str):
         if not connection_url:
             raise ValueError("connection_url must be provided")
@@ -793,7 +822,14 @@ class SnowflakeDataSource(DataSource):
         try:
             # Always use COPY for better performance
             self.logger.info(f"Using COPY for {table_name} ({len(rows)} rows)")
-            return self._insert_batch_with_copy(table_name, rows)
+            result = self._insert_batch_with_copy(table_name, rows)
+            
+            # Always run deduplication if this table needs it
+            if result and table_name in self.DEDUP_TABLES:
+                self.logger.info(f"Running deduplication for {table_name}...")
+                self._deduplicate_table(table_name)
+            
+            return result
             
             # Prepare values for bulk insert
             values_list = []
@@ -878,6 +914,72 @@ class SnowflakeDataSource(DataSource):
                 self.connection.rollback()
             # Re-raise the exception with full details
             raise Exception(error_msg) from e
+    
+    def _deduplicate_table(self, table_name: str) -> None:
+        """Remove duplicate records from table based on updated_at timestamp"""
+        try:
+            if table_name not in self.DEDUP_TABLES:
+                return
+            
+            primary_key, timestamp_field = self.DEDUP_TABLES[table_name]
+            
+            # Use Snowflake's QUALIFY clause for cleaner deduplication
+            dedup_sql = f"""
+                DELETE FROM {table_name}
+                USING (
+                    SELECT * FROM {table_name}
+                    QUALIFY ROW_NUMBER() OVER (
+                        PARTITION BY {primary_key}
+                        ORDER BY 
+                            {timestamp_field} DESC NULLS LAST,
+                            etl_timestamp DESC
+                    ) > 1
+                ) AS dupes
+                WHERE {table_name}.{primary_key} = dupes.{primary_key}
+                    AND COALESCE({table_name}.{timestamp_field}, '1900-01-01') = COALESCE(dupes.{timestamp_field}, '1900-01-01')
+                    AND {table_name}.etl_timestamp = dupes.etl_timestamp
+            """
+            
+            # For composite keys, we need a different approach
+            if ',' in primary_key:
+                key_parts = [k.strip() for k in primary_key.split(',')]
+                join_conditions = ' AND '.join([f"{table_name}.{k} = dupes.{k}" for k in key_parts])
+                
+                dedup_sql = f"""
+                    DELETE FROM {table_name}
+                    USING (
+                        SELECT * FROM {table_name}
+                        QUALIFY ROW_NUMBER() OVER (
+                            PARTITION BY {primary_key}
+                            ORDER BY 
+                                {timestamp_field} DESC NULLS LAST,
+                                etl_timestamp DESC
+                        ) > 1
+                    ) AS dupes
+                    WHERE {join_conditions}
+                        AND COALESCE({table_name}.{timestamp_field}, '1900-01-01') = COALESCE(dupes.{timestamp_field}, '1900-01-01')
+                        AND {table_name}.etl_timestamp = dupes.etl_timestamp
+                """
+            
+            self.logger.info(f"Running deduplication for {table_name}...")
+            result = self.cursor.execute(dedup_sql)
+            
+            # Get row count from result
+            if result and hasattr(result, 'rowcount'):
+                rows_deleted = result.rowcount
+            else:
+                # Try to get the count from the cursor
+                rows_deleted = self.cursor.rowcount if hasattr(self.cursor, 'rowcount') else 0
+            
+            if rows_deleted and rows_deleted > 0:
+                self.logger.info(f"✓ Removed {rows_deleted} duplicate rows from {table_name}")
+            else:
+                self.logger.info(f"✓ No duplicates found in {table_name}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to deduplicate {table_name}: {e}")
+            # Don't fail the whole pipeline on dedup errors
+            # Duplicates can be cleaned up later manually if needed
     
     def get_connection(self):
         """Get Snowflake connection"""
